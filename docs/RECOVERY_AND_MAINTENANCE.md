@@ -10,6 +10,9 @@ account-specific and stored only as a hash.
 The normal OTP screen does not show a recovery control. F8 becomes available
 only after the configured failed-attempt threshold, which defaults to three.
 
+Once F8 has pressed after failed-attempt threshold, Account recovery will be shown, where you can entered the maintenance recovery key. 
+![Session Recovery](images/lab-f8-recovery.png)
+
 The recovery workflow requires the machine maintenance key and a reason. It
 formats the key into groups, pauses the normal OTP timeout, extends the
 recovery-entry timeout while typing, and unlocks only the current session.
@@ -60,3 +63,4 @@ Disable later with:
 ```cmd
 wlg-recovery.cmd disable
 ```
+
