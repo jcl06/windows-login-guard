@@ -10,7 +10,7 @@ Guard then requires a current six-digit TOTP, a one-time user recovery code, an
 authorized approval, or a controlled break-glass recovery path before the
 session is treated as verified.
 
-Current release: **v1.10.2**
+Current release: **v1.10.3**
 
 ![Windows Login Guard architecture](docs/images/architecture.svg)
 
@@ -83,7 +83,8 @@ Local features:
 - maintenance recovery-key rotation;
 - Safe Mode and Windows Recovery Environment recovery;
 - local audit logging and diagnostics;
-- upgrade-time service and UI validation.
+- upgrade-time service and UI validation;
+- service-owned lock and fallback enforcement when the verification UI fails.
 
 Optional remote-management features:
 
@@ -610,14 +611,44 @@ Existing local enrollment is preserved.
 It adds central inventory, approval requests, background notifications, remote
 Approve/Deny, remote Lock/Log Off, and central audit.
 
-See [Optional Remote Management](REMOTE_MANAGEMENT.md).
+For a normal management-server installation, `-DnsName` and `-Port` are
+optional:
+
+```powershell
+.\test-prerequisites.ps1 -Role ManagementServer
+.\install-remote-server.ps1
+```
+
+The defaults are the current Windows computer name and TCP 8443. Explicit
+values are needed only for a deliberately configured DNS alias or FQDN, or a
+different HTTPS port.
+
+To register another protected PC, generate its installer bundle on the
+management server:
+
+```powershell
+& "C:\Program Files\WindowsLoginGuardRemoteServer\new-protected-pc-installer.ps1" `
+    -Label "Accounting-PC" `
+    -ValidHours 24
+```
+
+Transfer the generated ZIP to the target PC, extract it, and run
+`install-protected-pc.ps1` as Administrator. The bundle already contains the
+server URL, public certificate, display name, and single-use registration
+code.
+
+The protected PC appears in Remote Administration after registration completes
+and the Remote Agent performs its first synchronization.
+
+See [Optional Remote Management](REMOTE_MANAGEMENT.md) for management-server,
+protected-PC, and separate Admin-PC installation.
 
 ## Upgrade and uninstall
 
 Upgrade an installed protected PC:
 
 ```powershell
-.\upgrade-to-v1.10.2.ps1
+.\upgrade-to-v1.10.3.ps1
 ```
 
 The upgrade stops the service and active UI processes, creates a timestamped
@@ -724,7 +755,7 @@ same pre-desktop guarantee as a Credential Provider.
 - [File Locations](docs/FILE_LOCATIONS.md)
 - [Lab Screenshot Notes](docs/SCREENSHOTS.md)
 - [Optional Remote Management](REMOTE_MANAGEMENT.md)
-- [Release Notes](RELEASE_NOTES_v1.10.2.md)
+- [Release Notes](RELEASE_NOTES.md)
 
 
 ## Video Demonstration

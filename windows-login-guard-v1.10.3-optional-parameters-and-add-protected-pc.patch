@@ -1,0 +1,1140 @@
+diff --git a/README.md b/README.md
+index 3385e5d..1e0acdd 100644
+--- a/README.md
++++ b/README.md
+@@ -616,24 +616,26 @@ diagnostics.
+ The server PC must already be protected and the current administrator must be
+ enrolled.
+ 
+-```powershell
+-.\test-prerequisites.ps1 `
+-    -Role ManagementServer `
+-    -DnsName "wlg-server.example.internal" `
+-    -Port 8443
++Both `-DnsName` and `-Port` are optional:
+ 
+-.\install-remote-server.ps1 `
+-    -DnsName "wlg-server.example.internal" `
+-    -Port 8443
++```powershell
++.\test-prerequisites.ps1 -Role ManagementServer
++.\install-remote-server.ps1
+ ```
+ 
++The defaults are the current Windows computer name and TCP 8443. Supply
++`-DnsName` or `-Port` only when deliberately overriding those defaults.
++
+ This installs the server, local Remote Administration app, notifier, firewall
+ rule, and local Remote Agent. It also links the current enrolled administrator
+ and registers the server PC as a managed device.
+ 
+ ### Add another protected PC
+ 
+-On the server:
++In Remote Administration, select **Add Protected PC**, enter the label and
++registration validity, and save the generated installer ZIP.
++
++The server-side PowerShell equivalent is:
+ 
+ ```powershell
+ & "C:\Program Files\WindowsLoginGuardRemoteServer\new-protected-pc-installer.ps1" `
+diff --git a/RELEASE_NOTES_v1.10.3.md b/RELEASE_NOTES_v1.10.3.md
+index c211556..0c08196 100644
+--- a/RELEASE_NOTES_v1.10.3.md
++++ b/RELEASE_NOTES_v1.10.3.md
+@@ -313,12 +313,12 @@ Run the appropriate preflight check before installation:
+ ```
+ 
+ ```powershell
+-.\test-prerequisites.ps1 `
+-    -Role ManagementServer `
+-    -DnsName "wlg-server.example.internal" `
+-    -Port 8443
++.\test-prerequisites.ps1 -Role ManagementServer
+ ```
+ 
++The management-server `-DnsName` and `-Port` parameters are optional. Their
++defaults are the current Windows computer name and TCP 8443.
++
+ ```powershell
+ .\test-prerequisites.ps1 -Role RemoteAdmin
+ ```
+@@ -445,3 +445,27 @@ The installation guides now include the complete separate Admin-PC workflow:
+ public-certificate export, workstation-code creation, exact administrator
+ username lookup, first-launch fields, per-Windows-user DPAPI/notifier behavior,
+ verification, reset, multi-user setup, upgrade, and uninstall.
++
++## Optional server parameters and protected-PC registration UI
++
++The management-server documentation now correctly identifies `-DnsName` and
++`-Port` as optional parameters.
++
++Running:
++
++```powershell
++.\install-remote-server.ps1
++```
++
++uses the current Windows computer name and TCP 8443. Explicit values are needed
++only for a deliberately configured DNS alias/FQDN or a different HTTPS port.
++
++Remote Administration now includes **Add Protected PC**. An authenticated
++administrator can create and save a ready-to-transfer protected-PC installer
++ZIP directly from the desktop application. The management server creates the
++single-use registration, embeds its public certificate and server URL, records
++the operation in central audit, and returns the ZIP over the pinned HTTPS
++connection.
++
++The existing `new-protected-pc-installer.ps1` server-side workflow remains
++available.
+diff --git a/REMOTE_MANAGEMENT.md b/REMOTE_MANAGEMENT.md
+index 4607df6..51a1d59 100644
+--- a/REMOTE_MANAGEMENT.md
++++ b/REMOTE_MANAGEMENT.md
+@@ -23,20 +23,21 @@ The management-server PC must already:
+ 
+ - be protected by Windows Login Guard;
+ - have the current Windows administrator fully enrolled;
+-- have a stable resolvable hostname or FQDN;
+-- have an unused TCP port, normally 8443;
++- have a Windows computer name that remote clients can resolve, or a
++  deliberately configured DNS alias/FQDN;
++- have an unused TCP port; the default is 8443;
+ - permit Windows Firewall administration;
+ - have outbound package-repository access during installation.
+ 
+-Run:
++For the normal defaults, run:
+ 
+ ```powershell
+-.\test-prerequisites.ps1 `
+-    -Role ManagementServer `
+-    -DnsName "wlg-server.example.internal" `
+-    -Port 8443
++.\test-prerequisites.ps1 -Role ManagementServer
+ ```
+ 
++`-DnsName` and `-Port` are optional and should be supplied only when the
++installation will override the computer name or TCP 8443.
++
+ A separate Admin PC should run:
+ 
+ ```powershell
+@@ -93,26 +94,42 @@ The account running `install-remote-server.ps1` must:
+ 
+ ## Step 2: install the management server and its local Admin app
+ 
+-Choose a stable hostname or FQDN that all remote clients can resolve. The name
+-must be included in the generated certificate.
++By default, the installer uses the current Windows computer name. Use a custom
++DNS alias or FQDN only when it has already been configured and all remote
++clients can resolve it. The selected name is included in the generated
++certificate.
+ 
+-Run the management-server preflight:
++Both `-DnsName` and `-Port` are optional. For a normal installation:
+ 
+ ```powershell
+-.\test-prerequisites.ps1 `
+-    -Role ManagementServer `
+-    -DnsName "wlg-server.example.internal" `
+-    -Port 8443
++.\test-prerequisites.ps1 -Role ManagementServer
++.\install-remote-server.ps1
+ ```
+ 
+-Install:
++The defaults are:
++
++```text
++DnsName = $env:COMPUTERNAME
++Port    = 8443
++```
++
++Use explicit values only for a deliberately configured DNS alias/FQDN or a
++different HTTPS port:
+ 
+ ```powershell
++.\test-prerequisites.ps1 `
++    -Role ManagementServer `
++    -DnsName "wlg-server.example.internal" `
++    -Port 9443
++
+ .\install-remote-server.ps1 `
+     -DnsName "wlg-server.example.internal" `
+-    -Port 8443
++    -Port 9443
+ ```
+ 
++A custom DNS name must resolve to the management-server PC from the server,
++every protected PC, and every separate Admin PC.
++
+ The installer performs all of the following:
+ 
+ - upgrades the local protected-PC role to the current release;
+@@ -153,13 +170,30 @@ installer. Remote clients must use the configured hostname or FQDN, not
+ 
+ ## Step 3: add another protected PC
+ 
+-On the management-server PC, create a complete installer bundle:
++Remote Administration provides the normal registration workflow:
++
++1. Open **Windows Login Guard Remote Administration**.
++2. Select **Add Protected PC** under the device list.
++3. Enter the protected-PC label.
++4. Select registration validity from 1 to 168 hours.
++5. Choose where to save the installer ZIP.
++6. Select **Create Installer**.
++7. Transfer the ZIP securely to the target PC.
++8. Extract it and run `install-protected-pc.ps1` as Administrator.
++9. Delete the ZIP after successful installation.
++
++The server creates a single-use registration and embeds the server URL, public
++certificate, display name, expiry, and registration code in the generated ZIP.
++
++The server-side PowerShell equivalent remains available:
+ 
+ ```powershell
+ & "C:\Program Files\WindowsLoginGuardRemoteServer\new-protected-pc-installer.ps1" `
+-    -Label "Accounting-PC"
++    -Label "Protected-PC" `
++    -ValidHours 24
+ ```
+ 
++
+ The ZIP is created on the current user's Desktop unless `-OutputDirectory` is
+ specified.
+ 
+@@ -342,14 +376,15 @@ Upgrade protected PCs with:
+ .\upgrade-to-v1.10.3.ps1
+ ```
+ 
+-Upgrade or repair the server and its local Admin app by rerunning:
++Upgrade or repair a server installed with the defaults by rerunning:
+ 
+ ```powershell
+-.\install-remote-server.ps1 `
+-    -DnsName "wlg-server.example.internal" `
+-    -Port 8443
++.\install-remote-server.ps1
+ ```
+ 
++When the server was installed with a custom DNS name or port, repeat the same
++`-DnsName` and `-Port` values during repair or upgrade.
++
+ Upgrade a separate Admin PC by rerunning:
+ 
+ ```powershell
+diff --git a/docs/INSTALLATION.md b/docs/INSTALLATION.md
+index c7a4d41..ae41aa5 100644
+--- a/docs/INSTALLATION.md
++++ b/docs/INSTALLATION.md
+@@ -111,30 +111,47 @@ lock/unlock OTP challenge before continuing.
+ 
+ ### Step 2: install the management server
+ 
+-Choose a stable hostname or FQDN that every protected PC and Admin PC can
+-resolve. Do not include `https://` in `-DnsName`.
++By default, the installer uses the current Windows computer name. Use a custom
++DNS alias or FQDN only when every protected PC and Admin PC can resolve it. Do
++not include `https://` in `-DnsName`.
++
++For the normal installation, both `-DnsName` and `-Port` are optional:
+ 
+ ```powershell
+-.\test-prerequisites.ps1 `
+-    -Role ManagementServer `
+-    -DnsName "wlg-server.example.internal" `
+-    -Port 8443
++.\test-prerequisites.ps1 -Role ManagementServer
++.\install-remote-server.ps1
+ ```
+ 
+-Install:
++The defaults are:
++
++```text
++DnsName = $env:COMPUTERNAME
++Port    = 8443
++```
++
++Use explicit values only when changing the HTTPS port or using a deliberately
++configured DNS alias or FQDN:
+ 
+ ```powershell
++.\test-prerequisites.ps1 `
++    -Role ManagementServer `
++    -DnsName "wlg-server.example.internal" `
++    -Port 9443
++
+ .\install-remote-server.ps1 `
+     -DnsName "wlg-server.example.internal" `
+-    -Port 8443
++    -Port 9443
+ ```
+ 
++A custom DNS name must resolve to the management-server PC from the server,
++every protected PC, and every separate Admin PC.
++
+ The installer:
+ 
+ - upgrades the local protected-PC role;
+ - installs `WindowsLoginGuardManagementServer`;
+ - generates or preserves the TLS certificate and private key;
+-- opens TCP 8443 for `LocalSubnet`;
++- opens the configured TCP port for `LocalSubnet`;
+ - installs the local Remote Administration app;
+ - links the current enrolled administrator;
+ - reuses that administrator's existing Windows Login Guard OTP;
+@@ -160,7 +177,24 @@ The expected services are `Running`.
+ 
+ ### Step 3: add another protected PC
+ 
+-On the management-server PC:
++#### From Remote Administration
++
++Open **Windows Login Guard Remote Administration** and select
++**Add Protected PC** under the device list.
++
++Enter:
++
++- a protected-PC label;
++- registration validity from 1 to 168 hours;
++- where to save the installer ZIP.
++
++Select **Create Installer**. The authenticated Admin application requests a
++single-use device registration from the management server and saves a complete,
++ready-to-transfer installer ZIP.
++
++#### From PowerShell on the management server
++
++The equivalent server-side command is:
+ 
+ ```powershell
+ & "C:\Program Files\WindowsLoginGuardRemoteServer\new-protected-pc-installer.ps1" `
+diff --git a/docs/PREREQUISITES.md b/docs/PREREQUISITES.md
+index 068fa12..9132b74 100644
+--- a/docs/PREREQUISITES.md
++++ b/docs/PREREQUISITES.md
+@@ -342,15 +342,15 @@ Protected PC:
+     -Role ProtectedPc
+ ```
+ 
+-Management server:
++Management server using the default computer name and TCP 8443:
+ 
+ ```powershell
+-.\test-prerequisites.ps1 `
+-    -Role ManagementServer `
+-    -DnsName "wlg-server.example.internal" `
+-    -Port 8443
++.\test-prerequisites.ps1 -Role ManagementServer
+ ```
+ 
++`-DnsName` and `-Port` are optional. Supply them only when testing the same
++custom values that will be passed to `install-remote-server.ps1`.
++
+ Separate Remote Admin PC:
+ 
+ ```powershell
+diff --git a/remote_admin.pyw b/remote_admin.pyw
+index fd06fdd..b5d317d 100644
+--- a/remote_admin.pyw
++++ b/remote_admin.pyw
+@@ -21,6 +21,7 @@ from remote_common import (
+     REMOTE_ADMIN_DATA,
+     REMOTE_ADMIN_TOKEN,
+     atomic_write_json,
++    http_bytes,
+     http_json,
+     protect_user_text,
+     read_json,
+@@ -383,6 +384,27 @@ class RemoteApiClient:
+             )
+         return response
+ 
++    def create_protected_pc_installer(
++        self,
++        label: str,
++        valid_hours: int,
++    ) -> tuple[bytes, dict[str, str]]:
++        if not self.session_token:
++            raise RuntimeError("Administrator authentication is required")
++        return http_bytes(
++            method="POST",
++            url=(
++                f"{self.server_url}"
++                "/api/v1/admin/protected-pc-installer"
++            ),
++            payload={
++                "label": label,
++                "valid_hours": valid_hours,
++            },
++            bearer_token=self.session_token,
++            ca_cert_path=self.ca_cert_path,
++        )
++
+     def logout(self) -> None:
+         if self.session_token:
+             try:
+@@ -392,6 +414,197 @@ class RemoteApiClient:
+         self.session_token = ""
+ 
+ 
++class ProtectedPcInstallerDialog(tk.Toplevel):
++    def __init__(self, parent: tk.Tk) -> None:
++        super().__init__(parent)
++        self.result: dict[str, Any] | None = None
++        self.title("Add Protected PC")
++        self.geometry("650x360")
++        self.resizable(False, False)
++
++        frame = ttk.Frame(self, padding=20)
++        frame.pack(fill="both", expand=True)
++        frame.columnconfigure(1, weight=1)
++
++        ttk.Label(
++            frame,
++            text="Create a protected-PC installer",
++            font=("Segoe UI", 15, "bold"),
++        ).grid(
++            row=0,
++            column=0,
++            columnspan=3,
++            sticky="w",
++            pady=(0, 8),
++        )
++        ttk.Label(
++            frame,
++            text=(
++                "Remote Administration will request a single-use "
++                "registration from the management server and save a "
++                "ready-to-transfer installer ZIP."
++            ),
++            wraplength=590,
++            justify="left",
++        ).grid(
++            row=1,
++            column=0,
++            columnspan=3,
++            sticky="w",
++            pady=(0, 18),
++        )
++
++        desktop = Path.home() / "Desktop"
++        if not desktop.is_dir():
++            desktop = Path.home()
++
++        self.label_var = tk.StringVar(value="Protected-PC")
++        self.hours_var = tk.IntVar(value=24)
++        self.output_var = tk.StringVar(
++            value=str(
++                desktop / "WindowsLoginGuard-Protected-PC.zip"
++            )
++        )
++
++        ttk.Label(frame, text="Protected-PC label").grid(
++            row=2,
++            column=0,
++            sticky="w",
++            padx=(0, 12),
++            pady=7,
++        )
++        ttk.Entry(
++            frame,
++            textvariable=self.label_var,
++            width=54,
++        ).grid(
++            row=2,
++            column=1,
++            columnspan=2,
++            sticky="ew",
++            pady=7,
++        )
++
++        ttk.Label(frame, text="Registration validity").grid(
++            row=3,
++            column=0,
++            sticky="w",
++            padx=(0, 12),
++            pady=7,
++        )
++        ttk.Spinbox(
++            frame,
++            from_=1,
++            to=168,
++            textvariable=self.hours_var,
++            width=8,
++        ).grid(row=3, column=1, sticky="w", pady=7)
++        ttk.Label(frame, text="hours (1–168)").grid(
++            row=3,
++            column=1,
++            sticky="w",
++            padx=(82, 0),
++            pady=7,
++        )
++
++        ttk.Label(frame, text="Save installer as").grid(
++            row=4,
++            column=0,
++            sticky="w",
++            padx=(0, 12),
++            pady=7,
++        )
++        ttk.Entry(
++            frame,
++            textvariable=self.output_var,
++            width=54,
++        ).grid(row=4, column=1, sticky="ew", pady=7)
++        ttk.Button(
++            frame,
++            text="Browse",
++            command=self._browse_output,
++        ).grid(row=4, column=2, padx=(8, 0), pady=7)
++
++        self.status_var = tk.StringVar(value="")
++        ttk.Label(
++            frame,
++            textvariable=self.status_var,
++            foreground="#b3261e",
++            wraplength=590,
++        ).grid(
++            row=5,
++            column=0,
++            columnspan=3,
++            sticky="w",
++            pady=(8, 4),
++        )
++
++        actions = ttk.Frame(frame)
++        actions.grid(
++            row=6,
++            column=0,
++            columnspan=3,
++            sticky="e",
++            pady=(18, 0),
++        )
++        ttk.Button(
++            actions,
++            text="Cancel",
++            command=self.destroy,
++        ).pack(side="right", padx=(8, 0))
++        ttk.Button(
++            actions,
++            text="Create Installer",
++            command=self._submit,
++        ).pack(side="right")
++
++        present_modal(self, parent)
++
++    def _browse_output(self) -> None:
++        selected = filedialog.asksaveasfilename(
++            parent=self,
++            title="Save protected-PC installer",
++            defaultextension=".zip",
++            filetypes=[
++                ("ZIP archives", "*.zip"),
++                ("All files", "*.*"),
++            ],
++            initialfile="WindowsLoginGuard-Protected-PC.zip",
++        )
++        if selected:
++            self.output_var.set(selected)
++
++    def _submit(self) -> None:
++        self.status_var.set("")
++        try:
++            label = safe_text(self.label_var.get(), 200)
++            if not label:
++                raise ValueError("Enter a protected-PC label")
++
++            valid_hours = int(self.hours_var.get())
++            if not 1 <= valid_hours <= 168:
++                raise ValueError(
++                    "Registration validity must be between 1 and 168 hours"
++                )
++
++            raw_output = self.output_var.get().strip()
++            if not raw_output:
++                raise ValueError("Choose where to save the installer ZIP")
++            output_path = Path(raw_output).expanduser()
++            if output_path.suffix.lower() != ".zip":
++                output_path = output_path.with_suffix(".zip")
++            output_path.parent.mkdir(parents=True, exist_ok=True)
++
++            self.result = {
++                "label": label,
++                "valid_hours": valid_hours,
++                "output_path": str(output_path.resolve()),
++            }
++            self.destroy()
++        except (OSError, TypeError, ValueError) as exc:
++            self.status_var.set(str(exc))
++
++
+ class EnrollmentDialog(tk.Toplevel):
+     def __init__(self, parent: tk.Tk) -> None:
+         super().__init__(parent)
+@@ -624,6 +837,7 @@ class RemoteAdminApp:
+         self.inventory_refresh_in_progress = False
+         self.detail_refresh_in_progress = False
+         self.device_removal_in_progress = False
++        self.protected_pc_installer_in_progress = False
+         self.approval_decision_in_progress = False
+         self.session_action_in_progress = False
+         self.approval_watch_in_progress = False
+@@ -765,6 +979,17 @@ class RemoteAdminApp:
+             pady=(0, 8),
+         )
+         device_actions.columnconfigure(0, weight=1)
++        self.add_device_button = ttk.Button(
++            device_actions,
++            text="Add Protected PC",
++            command=self._create_protected_pc_installer,
++        )
++        self.add_device_button.grid(
++            row=0,
++            column=0,
++            sticky="ew",
++            pady=(0, 6),
++        )
+         self.remove_device_button = ttk.Button(
+             device_actions,
+             text="Remove Device",
+@@ -772,7 +997,7 @@ class RemoteAdminApp:
+             state="disabled",
+         )
+         self.remove_device_button.grid(
+-            row=0,
++            row=1,
+             column=0,
+             sticky="ew",
+         )
+@@ -1117,6 +1342,15 @@ class RemoteAdminApp:
+             )
+             else "normal"
+         )
++        self.add_device_button.configure(
++            state="disabled"
++            if (
++                busy
++                or self.protected_pc_installer_in_progress
++                or self.closing
++            )
++            else "normal"
++        )
+         self._update_remove_device_button(busy=busy)
+         self._update_approval_buttons(busy=busy)
+ 
+@@ -1144,6 +1378,7 @@ class RemoteAdminApp:
+                 self.inventory_refresh_in_progress
+                 or self.detail_refresh_in_progress
+                 or self.device_removal_in_progress
++                or self.protected_pc_installer_in_progress
+                 or self.approval_decision_in_progress
+                 or self.session_action_in_progress
+             )
+@@ -1183,6 +1418,7 @@ class RemoteAdminApp:
+                 self.inventory_refresh_in_progress
+                 or self.detail_refresh_in_progress
+                 or self.device_removal_in_progress
++                or self.protected_pc_installer_in_progress
+                 or self.approval_decision_in_progress
+                 or self.session_action_in_progress
+             )
+@@ -1266,6 +1502,7 @@ class RemoteAdminApp:
+             session is None
+             or self.session_action_in_progress
+             or self.device_removal_in_progress
++            or self.protected_pc_installer_in_progress
+             or self.approval_decision_in_progress
+             or action not in {"lock", "logoff"}
+         ):
+@@ -1352,6 +1589,7 @@ class RemoteAdminApp:
+             self.inventory_refresh_in_progress
+             or self.detail_refresh_in_progress
+             or self.device_removal_in_progress
++            or self.protected_pc_installer_in_progress
+             or self.approval_decision_in_progress
+         )
+ 
+@@ -1430,6 +1668,11 @@ class RemoteAdminApp:
+                 self._apply_detail_result(future, context)
+             elif kind == "remove_device":
+                 self._apply_remove_device_result(future, context)
++            elif kind == "create_protected_pc_installer":
++                self._apply_protected_pc_installer_result(
++                    future,
++                    context,
++                )
+             elif kind == "approval_decision":
+                 self._apply_approval_decision_result(future, context)
+             elif kind == "approval_watch":
+@@ -1659,6 +1902,7 @@ class RemoteAdminApp:
+         self._set_busy(
+             self.detail_refresh_in_progress
+             or self.device_removal_in_progress
++            or self.protected_pc_installer_in_progress
+             or self.approval_decision_in_progress
+         )
+         silent = bool(context.get("silent"))
+@@ -1805,6 +2049,7 @@ class RemoteAdminApp:
+         self._set_busy(
+             self.inventory_refresh_in_progress
+             or self.device_removal_in_progress
++            or self.protected_pc_installer_in_progress
+             or self.approval_decision_in_progress
+         )
+ 
+@@ -1925,6 +2170,103 @@ class RemoteAdminApp:
+         else:
+             self.refresh_selected_device()
+ 
++    def _create_protected_pc_installer(self) -> None:
++        if self.protected_pc_installer_in_progress:
++            return
++
++        dialog = ProtectedPcInstallerDialog(self.root)
++        self.root.wait_window(dialog)
++        if dialog.result is None:
++            return
++
++        request = dict(dialog.result)
++        output_path = str(request.pop("output_path"))
++        self.protected_pc_installer_in_progress = True
++        self._set_busy(True)
++        self._set_status(
++            "Creating protected-PC installer...",
++            "information",
++        )
++        future = self.executor.submit(
++            self.client.create_protected_pc_installer,
++            str(request["label"]),
++            int(request["valid_hours"]),
++        )
++        future.add_done_callback(
++            lambda completed: self.ui_queue.put(
++                (
++                    "create_protected_pc_installer",
++                    completed,
++                    {
++                        "output_path": output_path,
++                        "label": str(request["label"]),
++                    },
++                )
++            )
++        )
++
++    def _apply_protected_pc_installer_result(
++        self,
++        future: Future[Any],
++        context: dict[str, Any],
++    ) -> None:
++        self.protected_pc_installer_in_progress = False
++        self._set_busy(
++            self.inventory_refresh_in_progress
++            or self.detail_refresh_in_progress
++            or self.device_removal_in_progress
++            or self.approval_decision_in_progress
++            or self.session_action_in_progress
++        )
++
++        try:
++            archive_data, response_headers = future.result()
++            if not archive_data.startswith(b"PK"):
++                raise ValueError(
++                    "The management server returned an invalid ZIP archive"
++                )
++
++            output_path = Path(str(context["output_path"]))
++            output_path.parent.mkdir(parents=True, exist_ok=True)
++            temporary_path = output_path.with_suffix(
++                output_path.suffix + ".tmp"
++            )
++            temporary_path.write_bytes(archive_data)
++            os.replace(temporary_path, output_path)
++        except Exception as exc:
++            message = str(exc)
++            if self._is_authentication_error(message):
++                self._reauthenticate_and_refresh()
++                return
++            self._set_status(message, "error")
++            messagebox.showerror(
++                "Protected-PC installer failed",
++                message,
++                parent=self.root,
++            )
++            return
++
++        label = str(context.get("label") or "Protected PC")
++        expires = self._local_time(
++            response_headers.get("x-wlg-expires-utc", "")
++        )
++        self._set_status(
++            f"Protected-PC installer created for {label}.",
++            "healthy",
++        )
++        messagebox.showinfo(
++            "Protected-PC installer created",
++            (
++                f"The installer ZIP was saved to:\n\n"
++                f"{output_path}\n\n"
++                f"Registration expires: {expires}\n\n"
++                "Transfer the ZIP securely to the protected PC, "
++                "extract it, and run install-protected-pc.ps1 as "
++                "Administrator. Delete the ZIP after installation."
++            ),
++            parent=self.root,
++        )
++
+     def _remove_selected_device(self) -> None:
+         device = self._selected_device_summary()
+         if device is None or self.device_removal_in_progress:
+@@ -2414,6 +2756,7 @@ class RemoteAdminApp:
+             not self.inventory_refresh_in_progress
+             and not self.detail_refresh_in_progress
+             and not self.device_removal_in_progress
++            and not self.protected_pc_installer_in_progress
+             and not self.approval_decision_in_progress
+             and not self.session_action_in_progress
+         ):
+diff --git a/remote_common.py b/remote_common.py
+index 9df8c5e..e613132 100644
+--- a/remote_common.py
++++ b/remote_common.py
+@@ -44,6 +44,7 @@ REMOTE_ADMIN_TOKEN = REMOTE_ADMIN_DATA / "workstation-token.dpapi"
+ REMOTE_ADMIN_CERT = REMOTE_ADMIN_DATA / "management-server.crt"
+ 
+ MAX_JSON_BYTES = 2 * 1024 * 1024
++MAX_BINARY_RESPONSE_BYTES = 25 * 1024 * 1024
+ MAX_LOG_TEXT_BYTES = 512 * 1024
+ MAX_AUDIT_RECORDS = 1000
+ 
+@@ -258,6 +259,68 @@ def http_json(
+         raise RuntimeError(f"Remote server connection failed: {exc.reason}") from exc
+ 
+ 
++def http_bytes(
++    *,
++    method: str,
++    url: str,
++    payload: dict[str, Any] | None = None,
++    bearer_token: str | None = None,
++    workstation_token: str | None = None,
++    ca_cert_path: str | None = None,
++    timeout: float = 60.0,
++) -> tuple[bytes, dict[str, str]]:
++    body = None
++    headers = {
++        "Accept": "application/zip, application/octet-stream",
++        "User-Agent": f"WindowsLoginGuardRemote/{REMOTE_API_VERSION}",
++    }
++    if payload is not None:
++        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
++        if len(body) > MAX_JSON_BYTES:
++            raise ValueError("Remote request is too large")
++        headers["Content-Type"] = "application/json"
++    if bearer_token:
++        headers["Authorization"] = f"Bearer {bearer_token}"
++    if workstation_token:
++        headers["X-WLG-Workstation-Token"] = workstation_token
++
++    request = urllib.request.Request(
++        url=url,
++        data=body,
++        headers=headers,
++        method=method.upper(),
++    )
++    context = ssl_context(ca_cert_path) if url.startswith("https://") else None
++    try:
++        with urllib.request.urlopen(
++            request,
++            timeout=timeout,
++            context=context,
++        ) as response:
++            raw = response.read(MAX_BINARY_RESPONSE_BYTES + 1)
++            if len(raw) > MAX_BINARY_RESPONSE_BYTES:
++                raise ValueError("Remote binary response is too large")
++            response_headers = {
++                str(key).lower(): str(value)
++                for key, value in response.headers.items()
++            }
++            return raw, response_headers
++    except urllib.error.HTTPError as exc:
++        raw = exc.read(MAX_JSON_BYTES)
++        try:
++            parsed = json.loads(raw.decode("utf-8"))
++        except (UnicodeDecodeError, json.JSONDecodeError):
++            parsed = {}
++        message = str(parsed.get("message") or parsed.get("error") or exc.reason)
++        raise RuntimeError(
++            f"Remote server returned HTTP {exc.code}: {message}"
++        ) from exc
++    except urllib.error.URLError as exc:
++        raise RuntimeError(
++            f"Remote server connection failed: {exc.reason}"
++        ) from exc
++
++
+ def hostname() -> str:
+     return socket.gethostname()
+ 
+diff --git a/remote_server.py b/remote_server.py
+index 0091747..b0c21cc 100644
+--- a/remote_server.py
++++ b/remote_server.py
+@@ -3,6 +3,7 @@ from __future__ import annotations
+ import argparse
+ from collections.abc import Iterator
+ from contextlib import contextmanager
++import io
+ import json
+ import logging
+ import os
+@@ -15,6 +16,7 @@ import sys
+ import threading
+ import time
+ import uuid
++import zipfile
+ from datetime import datetime, timedelta, timezone
+ from http import HTTPStatus
+ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+@@ -30,6 +32,7 @@ import win32serviceutil
+ 
+ from remote_common import (
+     MAX_AUDIT_RECORDS,
++    MAX_BINARY_RESPONSE_BYTES,
+     MAX_JSON_BYTES,
+     MAX_LOG_TEXT_BYTES,
+     REMOTE_ADMIN_CERT,
+@@ -482,6 +485,33 @@ class ManagementRequestHandler(BaseHTTPRequestHandler):
+         self.end_headers()
+         self.wfile.write(body)
+ 
++    def _binary_response(
++        self,
++        status: int,
++        body: bytes,
++        *,
++        content_type: str,
++        filename: str,
++        headers: dict[str, str] | None = None,
++    ) -> None:
++        if len(body) > MAX_BINARY_RESPONSE_BYTES:
++            raise ValueError("Binary response exceeds the server limit")
++        self.send_response(status)
++        self.send_header("Content-Type", content_type)
++        self.send_header("Content-Length", str(len(body)))
++        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
++        self.send_header("Cache-Control", "no-store")
++        self.send_header("X-Content-Type-Options", "nosniff")
++        for name, value in (headers or {}).items():
++            self.send_header(name, value)
++        if isinstance(self.connection, ssl.SSLSocket):
++            self.send_header(
++                "Strict-Transport-Security",
++                "max-age=31536000",
++            )
++        self.end_headers()
++        self.wfile.write(body)
++
+     def _html_response(
+         self,
+         status: int,
+@@ -806,6 +836,15 @@ certificate.
+             if path == "/api/v1/devices/command-results":
+                 self._device_command_result(self._read_json())
+                 return
++            if path == "/api/v1/admin/protected-pc-installer":
++                session = self._require_admin()
++                if session is None:
++                    return
++                self._create_protected_pc_installer(
++                    payload=self._read_json(),
++                    session=session,
++                )
++                return
+             if path.startswith("/api/v1/admin/devices/"):
+                 session = self._require_admin()
+                 if session is None:
+@@ -934,6 +973,180 @@ certificate.
+         )
+         return row
+ 
++    def _create_protected_pc_installer(
++        self,
++        *,
++        payload: dict[str, Any],
++        session: sqlite3.Row,
++    ) -> None:
++        label = safe_text(payload.get("label"), 200)
++        if not label:
++            raise ValueError("Protected-PC label is required")
++
++        valid_hours = payload.get("valid_hours", 24)
++        if (
++            isinstance(valid_hours, bool)
++            or not isinstance(valid_hours, int)
++            or not 1 <= valid_hours <= 168
++        ):
++            raise ValueError("valid_hours must be between 1 and 168")
++
++        install_dir = Path(__file__).resolve().parent
++        setup_path = install_dir / "remote-setup.json"
++        payload_dir = install_dir / "protected-pc-package"
++
++        if not setup_path.is_file():
++            raise ValueError(
++                "Management-server setup information is unavailable. "
++                "Repair the server role with install-remote-server.ps1."
++            )
++        if not payload_dir.is_dir():
++            raise ValueError(
++                "The protected-PC installer payload is unavailable. "
++                "Repair the server role with install-remote-server.ps1."
++            )
++
++        setup = read_json(setup_path, {})
++        if not isinstance(setup, dict):
++            raise ValueError("The management-server setup file is invalid")
++
++        server_url = validate_server_url(
++            safe_text(setup.get("server_url"), 1000),
++            False,
++        )
++        certificate_path = Path(
++            safe_text(setup.get("server_certificate"), 1000)
++        )
++        if not certificate_path.is_file():
++            raise ValueError(
++                "The management-server public certificate is unavailable. "
++                "Repair the server role with install-remote-server.ps1."
++            )
++
++        token = new_token(32)
++        token_hash = sha256_token(token)
++        now = datetime.now(timezone.utc)
++        expires = now + timedelta(hours=valid_hours)
++
++        safe_label = "".join(
++            character
++            if (
++                character.isascii()
++                and (character.isalnum() or character in "._-")
++            )
++            else "-"
++            for character in label
++        ).strip("-._")
++        if not safe_label:
++            safe_label = "Protected-PC"
++
++        archive_name = (
++            f"WindowsLoginGuard-{safe_label}-"
++            f"{now.strftime('%Y%m%d-%H%M%S')}.zip"
++        )
++
++        with db_connect(self.server.config) as db:
++            db.execute(
++                """
++                INSERT INTO enrollment_tokens (
++                    kind, token_hash, label, created_utc, expires_utc
++                ) VALUES ('device', ?, ?, ?, ?)
++                """,
++                (
++                    token_hash,
++                    label,
++                    now.isoformat(),
++                    expires.isoformat(),
++                ),
++            )
++
++        try:
++            registration = {
++                "server_url": server_url,
++                "registration_code": token,
++                "server_certificate": "server.crt",
++                "display_name": label,
++                "expires_utc": expires.isoformat(),
++            }
++            instructions = (
++                "WINDOWS LOGIN GUARD PROTECTED-PC INSTALLER\n\n"
++                "1. Copy this ZIP to the protected Windows PC.\n"
++                "2. Extract the ZIP.\n"
++                "3. Open PowerShell as Administrator in the extracted folder.\n"
++                "4. Run:\n\n"
++                "   .\\install-protected-pc.ps1\n\n"
++                "The server URL, public certificate, and single-use "
++                "registration code are embedded in this ZIP.\n\n"
++                f"The registration expires at {expires.isoformat()} UTC.\n"
++                "Transfer the ZIP securely and delete it after installation.\n"
++            )
++
++            buffer = io.BytesIO()
++            with zipfile.ZipFile(
++                buffer,
++                mode="w",
++                compression=zipfile.ZIP_DEFLATED,
++                compresslevel=9,
++            ) as archive:
++                for source in sorted(payload_dir.rglob("*")):
++                    if source.is_file():
++                        relative = source.relative_to(
++                            payload_dir
++                        ).as_posix()
++                        archive.write(source, relative)
++                archive.write(certificate_path, "server.crt")
++                archive.writestr(
++                    "registration.json",
++                    json.dumps(
++                        registration,
++                        indent=2,
++                        sort_keys=True,
++                    ) + "\n",
++                )
++                archive.writestr("INSTALL-FIRST.txt", instructions)
++
++            archive_data = buffer.getvalue()
++            if len(archive_data) > MAX_BINARY_RESPONSE_BYTES:
++                raise ValueError(
++                    "The generated protected-PC installer exceeds the "
++                    "remote download limit."
++                )
++        except Exception:
++            with db_connect(self.server.config) as db:
++                db.execute(
++                    """
++                    DELETE FROM enrollment_tokens
++                    WHERE token_hash = ? AND used_utc IS NULL
++                    """,
++                    (token_hash,),
++                )
++            raise
++
++        central_audit(
++            self.server.config,
++            action="device_installer_bundle_created",
++            actor_type="admin",
++            actor_id=str(session["username"]),
++            target_type="device",
++            target_id=label,
++            remote_address=self.remote_address,
++            details={
++                "expires_utc": expires.isoformat(),
++                "workstation_id": str(session["workstation_id"]),
++                "archive_name": archive_name,
++            },
++        )
++        self._binary_response(
++            HTTPStatus.CREATED,
++            archive_data,
++            content_type="application/zip",
++            filename=archive_name,
++            headers={
++                "X-WLG-Archive-Name": archive_name,
++                "X-WLG-Expires-Utc": expires.isoformat(),
++            },
++        )
++
+     def _register_workstation(self, payload: dict[str, Any]) -> None:
+         enrollment_token = safe_text(payload.get("enrollment_token"), 500)
+         label = safe_text(payload.get("label"), 200)

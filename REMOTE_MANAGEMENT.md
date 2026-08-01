@@ -1,4 +1,4 @@
-# Optional Remote Management for Windows Login Guard v1.10.2
+# Optional Remote Management for Windows Login Guard v1.10.3
 
 
 > Remote management is an optional extension. Install and test local Windows
@@ -28,20 +28,384 @@ The management-server PC must already:
 - permit Windows Firewall administration;
 - have outbound package-repository access during installation.
 
-Run:
+For a normal management-server installation, both `-DnsName` and
+`-Port` are optional:
+
+```powershell
+.\test-prerequisites.ps1 -Role ManagementServer
+```
+
+When omitted, the installation uses:
+
+```text
+DnsName = $env:COMPUTERNAME
+Port    = 8443
+```
+
+Specify them only when using a deliberately configured DNS alias or FQDN, or
+when changing the HTTPS port:
 
 ```powershell
 .\test-prerequisites.ps1 `
     -Role ManagementServer `
     -DnsName "wlg-server.example.internal" `
-    -Port 8443
+    -Port 9443
 ```
+
+A custom DNS name must resolve to the management-server PC from the server
+itself, every protected PC, and every separate Admin PC.
 
 A separate Admin PC should run:
 
 ```powershell
 .\test-prerequisites.ps1 -Role RemoteAdmin
 ```
+
+## Installation overview
+
+Remote management has three deployment roles:
+
+1. **Management-server PC** — hosts the HTTPS API, central database, local
+   Remote Administration app, notifier, and normally its own protected-PC
+   Remote Agent.
+2. **Protected PC** — runs local Windows Login Guard plus the outbound Remote
+   Agent.
+3. **Separate Admin PC** — runs only Remote Administration and the per-user
+   approval notifier.
+
+The management-server PC may also be the only Admin PC. In that case,
+`install-remote-server.ps1` installs and links Remote Administration
+automatically; do not run `install-remote-admin.ps1` on the server PC.
+
+## Step 1: protect and enroll the management-server PC
+
+The future server must first be a working protected PC.
+
+From elevated PowerShell in the extracted release:
+
+```powershell
+.\test-prerequisites.ps1 -Role ProtectedPc
+.\install-protected-pc.ps1
+```
+
+Complete OTP enrollment for the Windows administrator that will install the
+server. Confirm that local verification and the local Administration console
+work before continuing.
+
+The account running `install-remote-server.ps1` must:
+
+- be enrolled in Windows Login Guard;
+- still have its DPAPI-protected TOTP secret;
+- be a Windows administrator.
+
+## Step 2: install the management server and its local Admin app
+
+For a normal installation, let the installer use the current Windows
+computer name and the default HTTPS port:
+
+```powershell
+.\test-prerequisites.ps1 -Role ManagementServer
+.\install-remote-server.ps1
+```
+
+These defaults are equivalent to:
+
+```text
+DnsName = $env:COMPUTERNAME
+Port    = 8443
+```
+
+Use explicit parameters only when a different, already configured DNS identity
+or HTTPS port is required:
+
+```powershell
+.\test-prerequisites.ps1 `
+    -Role ManagementServer `
+    -DnsName "wlg-server.example.internal" `
+    -Port 9443
+
+.\install-remote-server.ps1 `
+    -DnsName "wlg-server.example.internal" `
+    -Port 9443
+```
+
+The selected name is written into the server URL and certificate. Every
+protected PC and separate Admin PC must be able to resolve that name.
+
+The installer performs all of the following:
+
+- upgrades the local protected-PC role to the current release;
+- installs `WindowsLoginGuardManagementServer`;
+- generates or preserves the HTTPS certificate and private key;
+- creates the TCP firewall rule for `LocalSubnet`;
+- installs Remote Administration locally;
+- links the currently enrolled local administrator;
+- reuses that administrator's existing Windows Login Guard OTP;
+- registers the server PC as a managed protected device;
+- installs and starts `WindowsLoginGuardRemoteAgent`;
+- enables the approval notifier for the current Windows user;
+- opens Remote Administration.
+
+No separate remote-administrator OTP is created for the automatically linked
+administrator.
+
+Verify the services:
+
+```powershell
+Get-Service `
+    WindowsLoginGuard, `
+    WindowsLoginGuardManagementServer, `
+    WindowsLoginGuardRemoteAgent
+```
+
+Verify the listener:
+
+```powershell
+Get-NetTCPConnection `
+    -LocalPort 8443 `
+    -State Listen
+```
+
+The local Remote Administration app uses the loopback endpoint created by the
+installer. Remote clients must use the configured hostname or FQDN, not
+`localhost`.
+
+## Step 3: register another protected PC
+
+Protected-PC registration is initiated on the management-server PC. Remote
+Administration displays and manages a device only after the generated bundle
+has been installed on that PC, registration has completed, and the Remote
+Agent has sent its first synchronization.
+
+Remote Administration does not require the administrator to manually enter a
+device ID, token, server URL, or certificate.
+
+On the management-server PC, create a complete installer bundle:
+
+```powershell
+& "C:\Program Files\WindowsLoginGuardRemoteServer\new-protected-pc-installer.ps1" `
+    -Label "Accounting-PC" `
+    -ValidHours 24
+```
+
+The ZIP is created on the current user's Desktop unless `-OutputDirectory` is
+specified. It contains a single-use protected-device registration code with
+the requested validity period.
+
+Transfer the ZIP securely to the target PC. On that PC:
+
+1. Extract the ZIP.
+2. Open PowerShell as Administrator in the extracted directory.
+3. Run:
+
+```powershell
+Get-ChildItem -LiteralPath . -Recurse -File |
+    Unblock-File
+
+Set-ExecutionPolicy `
+    -Scope Process `
+    -ExecutionPolicy Bypass `
+    -Force
+
+.\install-protected-pc.ps1
+```
+
+The bundle already contains the server URL, public certificate, display name,
+and single-use registration code. Do not enter them manually.
+
+Verify the endpoint:
+
+```powershell
+Get-Service WindowsLoginGuard, WindowsLoginGuardRemoteAgent
+
+& "C:\Program Files\WindowsLoginGuard\test-remote-endpoint.ps1"
+```
+
+If local installation succeeds but registration is interrupted, retry after
+connectivity is restored:
+
+```powershell
+& "C:\Program Files\WindowsLoginGuard\resume-remote-registration.ps1"
+```
+
+Local OTP protection remains active while remote registration is pending.
+
+After successful installation, wait for the Remote Agent's first
+synchronization, then open Remote Administration and confirm that the new
+device appears in the protected-device inventory.
+
+On the management server, registrations can also be reviewed with:
+
+```powershell
+& "C:\Program Files\WindowsLoginGuardRemoteServer\list-remote-registrations.ps1"
+```
+
+## Step 4: install a separate Admin PC
+
+A separate Admin PC does not need the local Windows Login Guard service unless
+you also want that PC protected. It needs:
+
+- the extracted current release;
+- the public management-server certificate;
+- a single-use Admin-workstation registration code;
+- network access to the server hostname and port.
+
+### On the management-server PC: export the public certificate
+
+Use a command to copy the public certificate to a transfer location. Do not
+copy or expose `server.key` or the management database.
+
+```powershell
+$serverInstall = "C:\Program Files\WindowsLoginGuardRemoteServer"
+$setup = Get-Content `
+    (Join-Path $serverInstall "remote-setup.json") `
+    -Raw |
+    ConvertFrom-Json
+
+$publicCert = Join-Path `
+    ([Environment]::GetFolderPath("Desktop")) `
+    "wlg-management-server.crt"
+
+Copy-Item `
+    -LiteralPath $setup.server_certificate `
+    -Destination $publicCert `
+    -Force
+
+$publicCert
+```
+
+### On the management-server PC: create the Admin-PC code
+
+```powershell
+& "C:\Program Files\WindowsLoginGuardRemoteServer\new-workstation-enrollment-token.ps1" `
+    -Label "ADMIN-PC - Administrator" `
+    -ValidHours 24
+```
+
+The code is single-use and expires. Transfer the code and public certificate
+through a secure channel.
+
+### On the separate Admin PC: install Remote Administration
+
+From elevated PowerShell in the extracted release:
+
+```powershell
+Get-ChildItem -LiteralPath . -Recurse -File |
+    Unblock-File
+
+Set-ExecutionPolicy `
+    -Scope Process `
+    -ExecutionPolicy Bypass `
+    -Force
+
+.\test-prerequisites.ps1 -Role RemoteAdmin
+.\install-remote-admin.ps1
+```
+
+Open the desktop shortcut:
+
+```text
+Windows Login Guard Remote Administration
+```
+
+Or run:
+
+```powershell
+& "C:\Program Files\WindowsLoginGuardRemoteAdmin\open-remote-admin.ps1"
+```
+
+On first launch, enter:
+
+| Field | Value |
+|---|---|
+| Server URL | `https://wlg-server.example.internal:8443` |
+| Server certificate | the copied `wlg-management-server.crt` |
+| Registration code | the single-use code created on the server |
+| Workstation label | a descriptive Admin-PC name |
+
+Select **Register**. Then sign in with an enabled remote administrator.
+
+For the administrator automatically linked by `install-remote-server.ps1`, use
+the linked Windows Login Guard username and the same authenticator OTP used on
+the management-server PC.
+
+The workstation token is protected with current-user DPAPI. The notifier is
+registered under the current user's `HKCU` Run key. When another Windows user
+will use Remote Administration on the same PC, create another workstation code
+and complete registration while signed in as that user.
+
+### Optional: create an independent remote administrator
+
+Most deployments should use the automatically linked local administrator. To
+create a separate management-only OTP identity on the server:
+
+```powershell
+& "C:\Program Files\WindowsLoginGuardRemoteServer\new-remote-admin.ps1" `
+    -Username "remote-admin"
+```
+
+Scan the generated QR code and use that username and OTP when signing in from a
+registered Admin PC.
+
+## Step 5: verify registrations and connectivity
+
+On the management server:
+
+```powershell
+& "C:\Program Files\WindowsLoginGuardRemoteServer\list-remote-registrations.ps1"
+```
+
+On a separate Admin PC:
+
+```powershell
+Test-NetConnection `
+    wlg-server.example.internal `
+    -Port 8443
+```
+
+Open Remote Administration and confirm:
+
+- the management-server PC appears online;
+- newly installed protected PCs appear online;
+- the Sessions, Audit, Logs, and Diagnostics views load;
+- a test approval notification reaches the intended Admin user;
+- Lock Session and Log Off Session are enabled only for valid online sessions.
+
+## Upgrade remote-management roles
+
+Upgrade protected PCs with:
+
+```powershell
+.\upgrade-to-v1.10.3.ps1
+```
+
+Upgrade or repair a server that uses the default computer name and TCP 8443
+by rerunning:
+
+```powershell
+.\install-remote-server.ps1
+```
+
+When the original installation used an explicit DNS alias, FQDN, or nondefault
+port, use the same values during repair or upgrade:
+
+```powershell
+.\install-remote-server.ps1 `
+    -DnsName "wlg-server.example.internal" `
+    -Port 9443
+```
+
+Changing the server name or port changes the management URL and may require
+updated client registration or certificate deployment.
+
+Upgrade a **separate** Admin PC by rerunning:
+
+```powershell
+.\install-remote-admin.ps1
+```
+
+Existing per-user workstation registration is retained unless it is revoked or
+reset.
 
 ## Architecture
 
