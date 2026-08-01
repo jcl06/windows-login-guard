@@ -1,0 +1,45 @@
+#Requires -RunAsAdministrator
+[CmdletBinding()]
+param(
+    [string]$InstallDir = "C:\Program Files\WindowsLoginGuard",
+    [switch]$KeepEnrollment
+)
+
+$ErrorActionPreference = "Continue"
+. (Join-Path $InstallDir "scope_helpers.ps1")
+Remove-WlgLegacyUiTasks
+Stop-WlgUiProcesses
+Remove-WlgAdminDesktopShortcut
+
+$serviceInfo = Get-CimInstance Win32_Service -Filter "Name='WindowsLoginGuard'" -ErrorAction SilentlyContinue
+if (Get-Service WindowsLoginGuard -ErrorAction SilentlyContinue) {
+    Stop-Service WindowsLoginGuard -Force -ErrorAction SilentlyContinue
+}
+
+$PythonExe = ""
+if ($serviceInfo -and $serviceInfo.PathName) {
+    $serviceExe = if ($serviceInfo.PathName.StartsWith('"')) {
+        [regex]::Match($serviceInfo.PathName, '^"([^"]+)"').Groups[1].Value
+    } else {
+        $serviceInfo.PathName.Split(' ')[0]
+    }
+    $PythonExe = Join-Path (Split-Path -Parent $serviceExe) "python.exe"
+}
+$ServiceScript = Join-Path $InstallDir "service.py"
+if ($PythonExe -and (Test-Path $PythonExe) -and (Test-Path $ServiceScript)) {
+    & $PythonExe $ServiceScript remove
+}
+else {
+    sc.exe delete WindowsLoginGuard | Out-Null
+}
+
+Remove-Item $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
+if (-not $KeepEnrollment) {
+    Remove-Item (Join-Path $env:ProgramData "WindowsLoginGuard") `
+        -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Write-Host "Windows Login Guard removed."
+if ($KeepEnrollment) {
+    Write-Host "Per-user OTP enrollments and configuration were retained."
+}

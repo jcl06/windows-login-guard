@@ -1,0 +1,3 @@
+pywin32>=311
+pyotp>=2.9.0
+qrcode[pil]>=8.0

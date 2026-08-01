@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="760" viewBox="0 0 1400 760">
+<defs>
+  <linearGradient id="b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#eaf2ff"/><stop offset="1" stop-color="#f8fafc"/></linearGradient>
+  <filter id="s"><feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#0f172a" flood-opacity=".2"/></filter>
+</defs>
+<rect width="1400" height="760" rx="26" fill="url(#b)"/>
+<text x="65" y="65" fill="#0f172a" font-family="Segoe UI,Arial" font-size="32" font-weight="700">Administration Console</text>
+<text x="65" y="100" fill="#475569" font-family="Segoe UI,Arial" font-size="17">Illustrative interface overview</text>
+
+<g filter="url(#s)">
+<rect x="100" y="135" width="1200" height="545" rx="18" fill="#fff" stroke="#cbd5e1" stroke-width="2"/>
+<rect x="100" y="135" width="1200" height="62" rx="18" fill="#172554"/>
+<rect x="100" y="179" width="1200" height="18" fill="#172554"/>
+<text x="137" y="175" fill="#eff6ff" font-family="Segoe UI,Arial" font-size="23" font-weight="700">Windows Login Guard Administration</text>
+
+<rect x="135" y="225" width="220" height="42" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="245" y="252" text-anchor="middle" fill="#334155" font-family="Segoe UI,Arial" font-size="15">Enrolled Accounts</text>
+<rect x="365" y="225" width="270" height="42" rx="8" fill="#dbeafe" stroke="#3b82f6"/>
+<text x="500" y="252" text-anchor="middle" fill="#1e3a8a" font-family="Segoe UI,Arial" font-size="15" font-weight="700">Recovery &amp; Maintenance</text>
+<rect x="645" y="225" width="150" height="42" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="720" y="252" text-anchor="middle" fill="#334155" font-family="Segoe UI,Arial" font-size="15">Audit</text>
+
+<text x="145" y="318" fill="#0f172a" font-family="Segoe UI,Arial" font-size="23" font-weight="700">Break-glass maintenance</text>
+<rect x="145" y="345" width="1110" height="125" rx="12" fill="#ecfdf5" stroke="#10b981" stroke-width="2"/>
+<text x="175" y="385" fill="#065f46" font-family="Segoe UI,Arial" font-size="19" font-weight="700">Maintenance mode is disabled</text>
+<text x="175" y="420" fill="#047857" font-family="Segoe UI,Arial" font-size="16">OTP enforcement is active for protected sessions.</text>
+<text x="175" y="448" fill="#047857" font-family="Segoe UI,Arial" font-size="15">Enablement requires administrator OTP, machine recovery key, and reason.</text>
+
+<rect x="145" y="510" width="155" height="44" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
+<text x="222" y="538" text-anchor="middle" fill="#334155" font-family="Segoe UI,Arial" font-size="15">Refresh Status</text>
+<rect x="315" y="510" width="235" height="44" rx="8" fill="#2563eb"/>
+<text x="432" y="538" text-anchor="middle" fill="#fff" font-family="Segoe UI,Arial" font-size="15" font-weight="700">Enable Maintenance Mode</text>
+<rect x="565" y="510" width="225" height="44" rx="8" fill="#e2e8f0" stroke="#cbd5e1"/>
+<text x="678" y="538" text-anchor="middle" fill="#94a3b8" font-family="Segoe UI,Arial" font-size="15">Restore OTP Enforcement</text>
+
+<rect x="145" y="590" width="1110" height="55" rx="10" fill="#fff7ed" stroke="#fb923c"/>
+<text x="175" y="623" fill="#9a3412" font-family="Segoe UI,Arial" font-size="15">Safe Mode and WinRE CLI recovery remain available if the Admin Console or service cannot run.</text>
+</g>
+</svg>
