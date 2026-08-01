@@ -7,6 +7,23 @@ param(
 
 $ErrorActionPreference = "Continue"
 . (Join-Path $InstallDir "scope_helpers.ps1")
+
+$remoteAgentInfo = Get-CimInstance Win32_Service -Filter "Name='WindowsLoginGuardRemoteAgent'" -ErrorAction SilentlyContinue
+if (Get-Service WindowsLoginGuardRemoteAgent -ErrorAction SilentlyContinue) {
+    Stop-Service WindowsLoginGuardRemoteAgent -Force -ErrorAction SilentlyContinue
+    if ($remoteAgentInfo -and $remoteAgentInfo.PathName) {
+        $remoteAgentExe = if ($remoteAgentInfo.PathName.StartsWith('"')) {
+            [regex]::Match($remoteAgentInfo.PathName, '^"([^"]+)"').Groups[1].Value
+        }
+        else { $remoteAgentInfo.PathName.Split(' ')[0] }
+        $remoteAgentPython = Join-Path (Split-Path -Parent $remoteAgentExe) "python.exe"
+        if (Test-Path $remoteAgentPython) {
+            & $remoteAgentPython (Join-Path $InstallDir "remote_agent.py") remove | Out-Null
+        }
+        else { sc.exe delete WindowsLoginGuardRemoteAgent | Out-Null }
+    }
+}
+
 Remove-WlgLegacyUiTasks
 Stop-WlgUiProcesses
 Remove-WlgAdminDesktopShortcut

@@ -67,25 +67,132 @@ Install 64-bit Python for all users under C:\Program Files. The service runs as 
     return $candidate
 }
 
-function Invoke-PyWin32PostInstall {
+function Test-PyWin32Runtime {
     param([Parameter(Mandatory = $true)][string]$PythonPath)
+
+    $probeId = [Guid]::NewGuid().ToString("N")
+    $tempRoot = [System.IO.Path]::GetTempPath()
+    $probePath = Join-Path $tempRoot (
+        "wlg-pywin32-probe-$probeId.py"
+    )
+    $stdoutPath = Join-Path $tempRoot (
+        "wlg-pywin32-probe-$probeId.stdout.txt"
+    )
+    $stderrPath = Join-Path $tempRoot (
+        "wlg-pywin32-probe-$probeId.stderr.txt"
+    )
+
+    try {
+        @'
+import pythoncom
+import pywintypes
+import win32serviceutil
+'@ | Set-Content `
+            -LiteralPath $probePath `
+            -Encoding Ascii `
+            -Force
+
+        $process = Start-Process `
+            -FilePath $PythonPath `
+            -ArgumentList @($probePath) `
+            -Wait `
+            -PassThru `
+            -RedirectStandardOutput $stdoutPath `
+            -RedirectStandardError $stderrPath
+
+        if ($process.ExitCode -eq 0) {
+            return $true
+        }
+
+        if (Test-Path $stderrPath) {
+            $errorText = Get-Content `
+                -LiteralPath $stderrPath `
+                -Raw `
+                -ErrorAction SilentlyContinue
+            if ($errorText) {
+                Write-Verbose $errorText
+            }
+        }
+        return $false
+    }
+    finally {
+        Remove-Item `
+            -LiteralPath $probePath `
+            -Force `
+            -ErrorAction SilentlyContinue
+        Remove-Item `
+            -LiteralPath $stdoutPath `
+            -Force `
+            -ErrorAction SilentlyContinue
+        Remove-Item `
+            -LiteralPath $stderrPath `
+            -Force `
+            -ErrorAction SilentlyContinue
+    }
+}
+
+function Ensure-PyWin32Runtime {
+    param([Parameter(Mandatory = $true)][string]$PythonPath)
+
+    if (Test-PyWin32Runtime -PythonPath $PythonPath) {
+        Write-Host (
+            "pywin32 runtime validation passed; " +
+            "machine post-install is not required."
+        )
+        return
+    }
+
     $pythonRoot = Split-Path -Parent $PythonPath
     $candidates = @(
         (Join-Path $pythonRoot "Scripts\pywin32_postinstall.py"),
         (Join-Path $pythonRoot "Lib\site-packages\pywin32_postinstall.py")
     )
-    $script = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    $script = $candidates |
+        Where-Object { Test-Path $_ } |
+        Select-Object -First 1
+
     if (-not $script) {
         Invoke-CheckedNative -FilePath $PythonPath `
-            -Arguments @("-m", "pip", "install", "--force-reinstall", "--no-cache-dir", "pywin32==312") `
+            -Arguments @(
+                "-m",
+                "pip",
+                "install",
+                "--force-reinstall",
+                "--no-cache-dir",
+                "pywin32"
+            ) `
             -Description "pywin32 repair"
-        $script = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+        $script = $candidates |
+            Where-Object { Test-Path $_ } |
+            Select-Object -First 1
     }
-    if (-not $script) { throw "pywin32_postinstall.py could not be located." }
-    Write-Host "Using pywin32 post-install script: $script"
-    Invoke-CheckedNative -FilePath $PythonPath `
-        -Arguments @($script, "-install") `
-        -Description "pywin32 machine installation"
+
+    if ($script) {
+        Write-Host "Running pywin32 post-install repair: $script"
+        & $PythonPath $script -install
+        $postInstallExitCode = $LASTEXITCODE
+
+        if ($postInstallExitCode -ne 0) {
+            Write-Warning (
+                "pywin32 post-install returned exit code " +
+                "$postInstallExitCode. This can occur when an existing " +
+                "Python service has a pywin32 DLL open. Runtime imports " +
+                "will be checked before deciding whether installation " +
+                "must stop."
+            )
+        }
+    }
+
+    if (-not (Test-PyWin32Runtime -PythonPath $PythonPath)) {
+        throw (
+            "pywin32 runtime validation failed. Close Python-based " +
+            "Windows services that use this Python installation, reboot " +
+            "if necessary, and rerun the installer."
+        )
+    }
+
+    Write-Host "pywin32 runtime validation passed."
 }
 
 $PythonExe = Resolve-Python -RequestedPath $PythonExe
@@ -99,19 +206,47 @@ $ServiceScript = Join-Path $InstallDir "service.py"
 . (Join-Path $SourceDir "scope_helpers.ps1")
 
 Write-Host "Using Python: $PythonExe"
-Write-Host "Installing Windows Login Guard v1.7.2..."
+Write-Host "Installing Windows Login Guard v1.10.2..."
 
 New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 New-Item -ItemType Directory -Path $UsersDir -Force | Out-Null
 New-Item -ItemType Directory -Path $RuntimeDir -Force | Out-Null
 
-Copy-Item "$SourceDir\*.py" $InstallDir -Force
-Copy-Item "$SourceDir\*.pyw" $InstallDir -Force
-Copy-Item "$SourceDir\*.ps1" $InstallDir -Force
-Copy-Item "$SourceDir\*.cmd" $InstallDir -Force
-Copy-Item "$SourceDir\requirements.txt" $InstallDir -Force
-Copy-Item "$SourceDir\config.example.json" $InstallDir -Force
-Copy-Item "$SourceDir\VERSION" $InstallDir -Force
+$CoreFiles = @(
+    "common.py",
+    "service.py",
+    "ui.pyw",
+    "admin.pyw",
+    "enroll.py",
+    "self_test.py",
+    "test_otp.py",
+    "scope_helpers.ps1",
+    "configure.ps1",
+    "open-admin.ps1",
+    "authorize-initial-enrollment.ps1",
+    "revoke-user.ps1",
+    "uninstall.ps1",
+    "wlg-recovery.cmd",
+    "requirements.txt",
+    "config.example.json",
+    "README.md",
+    "VERSION"
+)
+
+foreach ($name in $CoreFiles) {
+    Copy-Item `
+        -LiteralPath (Join-Path $SourceDir $name) `
+        -Destination $InstallDir `
+        -Force
+}
+
+if (Test-Path (Join-Path $SourceDir "docs")) {
+    Copy-Item `
+        (Join-Path $SourceDir "docs") `
+        $InstallDir `
+        -Recurse `
+        -Force
+}
 
 Invoke-CheckedNative -FilePath $PythonExe `
     -Arguments @("-m", "pip", "install", "--upgrade", "pip") `
@@ -119,7 +254,7 @@ Invoke-CheckedNative -FilePath $PythonExe `
 Invoke-CheckedNative -FilePath $PythonExe `
     -Arguments @("-m", "pip", "install", "--upgrade", "-r", (Join-Path $InstallDir "requirements.txt")) `
     -Description "dependency installation"
-Invoke-PyWin32PostInstall -PythonPath $PythonExe
+Ensure-PyWin32Runtime -PythonPath $PythonExe
 Invoke-CheckedNative -FilePath $PythonExe `
     -Arguments @("-c", "import pyotp, qrcode, PIL, win32serviceutil, win32ts; print('Dependency check passed')") `
     -Description "dependency validation"

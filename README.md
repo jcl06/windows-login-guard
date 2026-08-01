@@ -1,98 +1,202 @@
 # Windows Login Guard
 
+**Post-login TOTP enforcement, recovery, maintenance, and administration for
+Windows accounts.**
+
+Windows Login Guard adds an account-specific verification gate after Windows
+sign-in, workstation unlock, or service start. Windows completes its normal
+password, PIN, Windows Hello, or biometric authentication first. Windows Login
+Guard then requires a current six-digit TOTP, a one-time user recovery code, an
+authorized approval, or a controlled break-glass recovery path before the
+session is treated as verified.
+
+Current release: **v1.10.2**
+
 ![Windows Login Guard architecture](docs/images/architecture.svg)
 
-Windows Login Guard adds a post-login TOTP verification gate to selected Windows accounts. Windows completes the normal sign-in or unlock first, then Windows Login Guard requires an authenticator OTP, user recovery code, or authorized recovery path before the user can continue.
-
-Current release: **v1.7.2**
-
-> [!IMPORTANT]
-> Windows Login Guard is post-login enforcement. It is not a Windows Credential Provider, pre-boot authentication system, BitLocker replacement, Windows Hello replacement, or domain authentication replacement.
+> **Important**
+>
+> Windows Login Guard is post-login enforcement. It is not a Windows Credential
+> Provider, pre-boot authentication system, BitLocker replacement, Windows
+> Hello replacement, domain authentication replacement, or password manager.
 
 ## Contents
 
+- [What it is for](#what-it-is-for)
 - [Features](#features)
+- [Deployment choices](#deployment-choices)
 - [Security model](#security-model)
-- [Requirements](#requirements)
-- [Quick start](#quick-start)
-- [Installation](#installation)
-- [Opening the Administration Console](#opening-the-administration-console)
-- [Normal verification and enrollment](#normal-verification-and-enrollment)
+- [Requirements and preflight](#requirements-and-preflight)
+- [Quick start: one standalone PC](#quick-start-one-standalone-pc)
+- [First account enrollment](#first-account-enrollment)
+- [Normal verification](#normal-verification)
+- [Opening Windows Login Guard Administration](#opening-windows-login-guard-administration)
+- [Enrolling another account](#enrolling-another-account)
 - [User recovery codes](#user-recovery-codes)
 - [Hidden F8 session recovery](#hidden-f8-session-recovery)
 - [Maintenance mode](#maintenance-mode)
-- [Safe Mode and WinRE CLI recovery](#safe-mode-and-winre-cli-recovery)
+- [Safe Mode and WinRE recovery](#safe-mode-and-winre-recovery)
 - [Configuration](#configuration)
 - [Diagnostics and troubleshooting](#diagnostics-and-troubleshooting)
-- [Upgrade](#upgrade)
-- [Uninstallation](#uninstallation)
+- [Optional remote management](#optional-remote-management)
+- [Upgrade and uninstall](#upgrade-and-uninstall)
 - [File locations](#file-locations)
-- [Release history](#release-history)
 - [Limitations](#limitations)
+
+## What it is for
+
+Windows Login Guard is intended for Windows PCs where selected local sessions
+should require a separate authenticator credential after normal Windows
+authentication.
+
+Typical deployments include:
+
+- one family or personal PC;
+- an administrator or support workstation;
+- a shared lab, classroom, or small-office computer;
+- several independently managed PCs;
+- centrally monitored protected PCs using the optional remote-management role.
+
+A single protected PC does **not** require a management server, web browser,
+database server, second computer, Microsoft cloud account, or inbound firewall
+rule.
 
 ## Features
 
-- Per-user TOTP enrollment
-- QR-code and manual-key provisioning
-- DPAPI-protected authenticator secrets
-- One-time user recovery codes
-- Configurable account protection scope
-- Administrator authorization for enrollment
-- Topmost or isolated-desktop verification UI
-- Dedicated Administration Console
-- Recovery-code regeneration
-- OTP enrollment reset
-- Hidden F8 session recovery after repeated OTP failures
-- Machine-wide maintenance mode
-- Safe Mode and Windows Recovery Environment recovery
-- Administrative audit logging
-- Upgrade-time service and UI validation
+Local features:
+
+- per-Windows-account TOTP enrollment;
+- QR-code and manual-key provisioning;
+- DPAPI-protected TOTP secrets;
+- one-time user recovery codes stored as hashes;
+- configurable protection scope;
+- administrator authorization for enrollment;
+- verification after sign-in, unlock, and optional service start;
+- topmost or isolated-desktop verification;
+- configurable timeout, attempt limits, and allow/lock/logoff actions;
+- local administrator approval workflows;
+- dedicated local Administration console;
+- recovery-code regeneration;
+- OTP enrollment reset and account revocation;
+- hidden F8 session recovery after repeated OTP failures;
+- machine-wide maintenance mode;
+- maintenance recovery-key rotation;
+- Safe Mode and Windows Recovery Environment recovery;
+- local audit logging and diagnostics;
+- upgrade-time service and UI validation.
+
+Optional remote-management features:
+
+- central protected-device inventory and health;
+- remote approval requests and Admin-PC notifications;
+- remote Approve and Deny;
+- remote Lock Session and Log Off Session;
+- signed device-specific commands;
+- central audit history;
+- endpoint retry backoff during server outages.
+
+## Deployment choices
+
+| Deployment | Description | Remote server |
+|---|---|---|
+| One standalone PC | Local OTP protection and local Administration on one PC | Not required |
+| Several standalone PCs | Each PC has independent configuration and enrollment | Not required |
+| One PC with all roles | Protected PC, management server, and Admin app on one PC | Installed locally |
+| Central management | One server/Admin PC manages other protected PCs | Required |
+
+Start with the standalone-PC workflow unless central management is already
+required.
 
 ## Security model
 
-The Windows service runs with elevated privileges and owns the protected data under:
+The Windows service runs with elevated privileges and owns protected state
+under:
 
 ```text
 C:\ProgramData\WindowsLoginGuard\secure
 ```
 
-The design uses:
+The local design uses:
 
-- Windows DPAPI for TOTP-secret protection
-- Restricted NTFS ACLs for protected files
-- A local management token for Administration Console transport authentication
-- Enrolled administrator OTP or recovery-code authorization for sensitive administrative operations
-- A separate machine maintenance recovery key for break-glass actions
-- Audit records for recovery, maintenance, reset, and regeneration operations
+- Windows DPAPI for TOTP-secret and token protection;
+- restricted NTFS ACLs for protected files;
+- a machine-local management token for Administration-console IPC
+  authentication;
+- an enrolled administrator OTP or one-time administrator recovery code for
+  sensitive administrative operations;
+- a separate machine maintenance recovery key for break-glass actions;
+- SHA-256 hashes for the maintenance key and user recovery codes;
+- local audit records for verification, recovery, maintenance, resets,
+  configuration changes, and remote commands.
 
-The maintenance recovery key is displayed once when first created. Only its SHA-256 hash is retained on the machine, so the existing key cannot be retrieved later. If it is lost, an enrolled administrator can rotate it from **Recovery & Maintenance → Rotate Maintenance Recovery Key**; the previous key is invalidated immediately.
+The maintenance recovery key is displayed when created. Only its SHA-256 hash
+is retained, so the current plaintext key cannot be retrieved later. An
+enrolled administrator can rotate it without the old key; rotation invalidates
+the previous key immediately and is audited.
 
-Use BitLocker to reduce the risk of offline modification. Anyone with unrestricted administrative or offline write access to an unencrypted Windows volume remains inside the machine trust boundary.
+Use BitLocker when offline tampering is a concern. A local administrator or a
+person with unrestricted offline write access to an unencrypted Windows volume
+is inside the machine trust boundary.
 
-## Requirements
+Full details: [Local Security Model](docs/SECURITY_MODEL.md).
 
-- Windows 10 or Windows 11
-- Administrator privileges for installation and Administration Console use
-- 64-bit Python 3.11 or newer installed for all users
-- A TOTP-compatible authenticator application
-- BitLocker recommended for systems requiring offline protection
+## Requirements and preflight
 
-## Quick start
+Required:
 
-Install from an elevated PowerShell window:
+- Windows 10 or Windows 11, 64-bit;
+- an elevated local-administrator PowerShell session;
+- Windows PowerShell 5.1 or newer;
+- 64-bit CPython 3.11 or newer installed for all users;
+- `pip` and Python's built-in Tcl/Tk GUI support;
+- package-repository access during dependency installation;
+- accurate Windows and authenticator-device clocks;
+- a TOTP-compatible authenticator;
+- separate storage for recovery material.
+
+Prepare the extracted release:
 
 ```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\install.ps1
+Get-ChildItem -LiteralPath . -Recurse -File |
+    Unblock-File
+
+Set-ExecutionPolicy `
+    -Scope Process `
+    -ExecutionPolicy Bypass `
+    -Force
+
+.\test-prerequisites.ps1 -Role ProtectedPc
 ```
 
-Save the maintenance recovery key shown by the installer.
+The preflight checker performs the pip dependency-resolution dry run
+internally. Do not run a separate pip command during normal preparation.
 
-Open the Administration Console:
+Full requirements:
+[Windows Installation Prerequisites](docs/PREREQUISITES.md).
+
+## Quick start: one standalone PC
+
+After the preflight reports no failures:
 
 ```powershell
-& "C:\Program Files\WindowsLoginGuard\open-admin.ps1"
+.\install-protected-pc.ps1
 ```
+
+Do not supply `ServerUrl`, `RegistrationCode`, or `ServerCertificate`.
+
+The installer:
+
+- creates `C:\Program Files\WindowsLoginGuard`;
+- creates restricted state under `C:\ProgramData\WindowsLoginGuard`;
+- installs and starts the `WindowsLoginGuard` service;
+- configures Windows service recovery;
+- creates the local Administration management token;
+- creates the elevated Administration desktop shortcut;
+- generates the machine maintenance recovery key when needed;
+- preserves existing protected data during an appropriate reinstall or upgrade;
+- opens the first-account enrollment workflow.
+
+Save the maintenance recovery key displayed by the installer.
 
 Lock Windows to test the verification gate:
 
@@ -100,260 +204,281 @@ Lock Windows to test the verification gate:
 rundll32.exe user32.dll,LockWorkStation
 ```
 
-## Installation
+## First account enrollment
 
-1. Extract the release package.
-2. Open PowerShell as Administrator.
-3. Change to the extracted folder.
-4. Run:
+The trusted installer account receives a one-time initial-enrollment flow.
 
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\install.ps1
-```
+The following screenshot is from the disposable lab VM used in the supplied
+recording. The values are lab-only examples.
 
-The installer:
+![Lab-VM account enrollment](docs/images/lab-enrollment.png)
 
-- Creates `C:\Program Files\WindowsLoginGuard`
-- Creates the protected ProgramData structure
-- Creates the Windows service
-- Creates the Administration Console management token
-- Generates the machine maintenance recovery key if one does not exist
-- Applies restricted NTFS permissions
-- Starts the service
-- Preserves existing protected data when appropriate
+1. Select **Begin initial enrollment**.
+2. Scan the account-specific QR code with a TOTP authenticator.
+3. Use the displayed manual setup key when scanning is unavailable.
+4. Enter the current six-digit code.
+5. Select **Verify and activate**.
+6. Save the one-time recovery codes.
+7. Select **Continue**.
 
-### Save the machine maintenance recovery key
+![Lab-VM recovery-code display](docs/images/lab-recovery-codes.png)
 
-The installer displays a key similar to:
+Each account receives its own TOTP secret and recovery-code set. The QR code,
+manual key, and recovery codes should be treated as account credentials in a
+real deployment.
+
+Detailed procedure:
+[Installation and First Enrollment](docs/INSTALLATION.md).
+
+## Normal verification
+
+When a protected session signs in or unlocks, Windows Login Guard displays its
+verification UI.
+
+![Lab-VM isolated-desktop verification](docs/images/lab-verification.png)
+
+An enrolled user may enter:
+
+- the current six-digit TOTP;
+- an unused one-time user recovery code.
+
+The OTP field receives focus automatically. With automatic submission enabled,
+a complete six-digit OTP is submitted after the configured delay.
+
+When verification expires or reaches the attempt limit, the configured action
+is applied. Sign-in, unlock, service-start, approval-timeout, and out-of-scope
+denial may have separate allow, lock, or logoff policies.
+
+## Opening Windows Login Guard Administration
+
+The local Administration console is installed on every protected PC, including
+a standalone PC with no remote server.
+
+Use the elevated desktop shortcut:
 
 ```text
-0123ABCD-4567EF89-0123ABCD-4567EF89-0123ABCD
+Windows Login Guard Administration
 ```
 
-Store it in a protected password manager or offline record. It is not the same as a user's one-time recovery codes.
-
-The key cannot be recovered from the stored SHA-256 hash.
-
-## Opening the Administration Console
-
-![Administration Console](docs/images/admin-console.svg)
-
-Open PowerShell as Administrator and run:
+Or run:
 
 ```powershell
 & "C:\Program Files\WindowsLoginGuard\open-admin.ps1"
 ```
 
-The Administration Console requires elevation.
+![Lab-VM Administration Dashboard](docs/images/lab-dashboard.png)
 
-### Enrolled Accounts
+The console requires local administrator elevation. Opening it does not by
+itself request an OTP, but sensitive changes require an enrolled administrator
+OTP or one-time administrator recovery code.
 
-The **Enrolled Accounts** tab provides:
+The tabs are:
 
-- Account and role inventory
-- Enrollment status
-- Remaining user recovery-code count
-- Last recovery-code generation time
-- Recovery-code regeneration
-- OTP enrollment reset
+- **Dashboard** — service health, version, startup type, PID, uptime,
+  notifications, active sessions, verification state, timers, failed attempts,
+  F8 readiness, and recent activity.
+- **Enrolled Accounts** — account inventory, role, enrollment status, remaining
+  recovery codes, recovery-code regeneration, and OTP reset.
+- **Configuration** — schema-driven Verification, Recovery, Enrollment, Policy,
+  Failure handling, and User interface settings.
+- **Recovery & Maintenance** — maintenance status, enable/disable maintenance,
+  and rotate the machine recovery key.
+- **Audit** — recent administrative and enforcement records displayed in local
+  time while remaining stored in UTC.
+- **Diagnostics** — service, IPC, configuration, storage, DPAPI, file-path, and
+  component-version checks.
 
-Recovery-code regeneration and OTP reset require an enrolled administrator's OTP or one-time administrator recovery code.
+The Dashboard refreshes every five seconds, reconnects after service restarts,
+reports Admin-console/service version mismatches, and shows specific connection
+errors instead of silently blank cards.
 
-### Recovery & Maintenance
+![Lab-VM Enrolled Accounts tab](docs/images/lab-enrolled-accounts.png)
 
-The **Recovery & Maintenance** tab provides:
+Full console reference:
+[Local Administration Guide](docs/LOCAL_ADMINISTRATION.md).
 
-- Current maintenance status
-- Maintenance enablement details
-- **Enable Maintenance Mode**
-- **Restore OTP Enforcement**
+## Enrolling another account
 
-Enabling or disabling maintenance mode requires:
+When another in-scope Windows account signs in, Windows Login Guard starts an
+enrollment workflow.
 
-1. An elevated Administration Console
-2. An enrolled administrator OTP or administrator recovery code
-3. The machine maintenance recovery key
-4. A mandatory reason when enabling maintenance mode
-5. Explicit confirmation
+When policy requires authorization:
 
-### Audit
+1. Select an enrolled administrator.
+2. Enter that administrator's current OTP or one-time recovery code.
+3. Select **Authorize enrollment**.
+4. The new account scans its own QR code.
+5. The new account confirms its own six-digit TOTP.
+6. Save the new account's recovery codes.
 
-The Admin Console converts stored UTC audit timestamps to the PC's current local time zone and labels them **Timestamp (Local)**. Audit records remain stored in UTC so they retain a consistent source-of-truth format across daylight-saving and time-zone changes.
+![Lab-VM administrator enrollment approval](docs/images/lab-administrator-approval.png)
 
+### Find the target account SID
 
-The **Audit** tab shows recent administrative operations, including:
+For the account running the current PowerShell process:
 
-- Recovery-code regeneration
-- OTP reset
-- Session recovery
-- Maintenance-mode enablement
-- Maintenance-mode disablement
+```powershell
+whoami /user
+```
 
-## Normal verification and enrollment
+To list local accounts and their SIDs:
 
-When a protected session signs in or unlocks, Windows Login Guard opens its verification UI.
+```powershell
+Get-LocalUser |
+    Select-Object Name, Enabled, SID
+```
 
-An enrolled user can enter:
+To authorize a specific local account:
 
-- The current six-digit TOTP from the authenticator application
-- An unused one-time user recovery code
+```powershell
+$targetSid = (
+    Get-LocalUser -Name "AccountName"
+).SID.Value
 
-An unenrolled protected account is guided through enrollment:
+& "C:\Program Files\WindowsLoginGuard\authorize-initial-enrollment.ps1" `
+    -UserSid $targetSid
+```
 
-1. Administrator authorization, if required by policy
-2. QR code or manual secret provisioning
-3. TOTP confirmation
-4. One-time recovery-code generation
-5. Recovery-code acknowledgement
+When the elevated PowerShell window uses a different administrator account,
+retrieve the currently signed-in interactive user's SID instead:
 
-The verification field should receive keyboard focus automatically.
+```powershell
+$interactiveUser = (Get-CimInstance Win32_ComputerSystem).UserName
+
+$targetSid = (
+    New-Object System.Security.Principal.NTAccount($interactiveUser)
+).Translate(
+    [System.Security.Principal.SecurityIdentifier]
+).Value
+```
+
+Confirm that the SID resolves to the intended account before authorizing it.
+See [Finding a Windows Account SID](docs/ACCOUNT_SIDS.md) for local, domain,
+Microsoft-account, and verification examples.
 
 ## User recovery codes
 
-User recovery codes are generated during enrollment and can be regenerated from the Administration Console.
+User recovery codes are generated during enrollment and may be regenerated from
+**Enrolled Accounts**.
 
 Each recovery code:
 
-- Is one-time use
-- Is stored only as a hash
-- Becomes invalid after successful use
-- Is separate from the machine maintenance recovery key
+- belongs to one account;
+- is one-time use;
+- is stored only as a hash;
+- becomes invalid after successful use;
+- may be entered in the normal OTP field;
+- is separate from the machine maintenance recovery key.
 
-Regenerating codes invalidates all previous unused codes for that user but does not change the authenticator secret.
+Regenerating codes invalidates every previous unused recovery code for that
+account but does not change the TOTP authenticator secret.
 
-The Administration Console recovery-code dialog supports:
-
-- Copy
-- Save As
-- Continue
+The one-time display supports **Copy**, **Save As...**, and **Continue**.
 
 ## Hidden F8 session recovery
 
-The normal OTP window does not show a recovery button or recovery hint.
+The normal OTP window does not display a recovery button or recovery hint.
 
-Recovery becomes available only after three failed OTP submissions. It still remains hidden until the user presses:
+F8 recovery becomes available only after the configured number of failed OTP
+submissions. The default is three failures. Before the threshold is reached,
+pressing `F8` has no effect.
+
+After the threshold:
 
 ```text
 F8
 ```
 
-Before three failed submissions, `F8` has no effect.
+opens the hidden break-glass screen.
 
-The hidden recovery screen:
+The recovery screen:
 
-- Requires the machine maintenance recovery key
-- Requires a recovery reason
-- Displays the long recovery key while it is entered
-- Automatically formats the key into groups
-- Pauses the normal OTP timeout
-- Extends the separate recovery-entry timeout while the user is typing
-- Unlocks only the current Windows session
+- requires the machine maintenance recovery key;
+- requires a recovery reason;
+- displays the long key while it is entered;
+- automatically formats the key into groups;
+- pauses the normal OTP timeout;
+- extends the separate recovery-entry timeout while the user types;
+- unlocks only the current Windows session;
+- cannot enable machine-wide maintenance mode.
 
-The session-only bypass expires when:
+The session-only bypass is cleared when:
 
-- Windows is locked
-- The user signs out
-- The Windows Login Guard service restarts
+- Windows is locked;
+- the user signs out;
+- the service restarts.
 
-The F8 recovery screen cannot enable machine-wide maintenance mode.
-
-## Maintenance recovery key management
-
-The installer displays the machine maintenance recovery key once. Save it offline. The application stores only its SHA-256 hash and therefore cannot display the existing key later.
-
-If the key was not saved or has been lost:
-
-1. Open the Administration Console as Administrator.
-2. Open **Recovery & Maintenance**.
-3. Select **Rotate Maintenance Recovery Key**.
-4. Authorize the rotation with an enrolled administrator OTP or one-time recovery code.
-5. Copy or save the new key from the one-time display.
-
-Rotation does not require the old key. It requires the elevated local Administration Console, the management token, and an enrolled administrator credential. The previous key stops working immediately, and the rotation is audited.
+Detailed behavior:
+[Recovery and Maintenance](docs/RECOVERY_AND_MAINTENANCE.md).
 
 ## Maintenance mode
 
-![Recovery and maintenance paths](docs/images/recovery-flow.svg)
+Maintenance mode disables OTP enforcement for all protected sessions. Use it
+only for planned maintenance or repair.
 
-Maintenance mode disables OTP enforcement for all protected sessions. Use it only for planned maintenance or when the verifier, service, UI, runtime, or protected data requires repair.
+![Lab-VM Recovery & Maintenance tab](docs/images/lab-recovery-maintenance.png)
 
-### Enable maintenance mode from the Administration Console
+To enable it from the local console:
 
-This is the preferred path when normal Windows and the service are operational.
-
-1. Open elevated PowerShell.
-2. Run:
-
-```powershell
-& "C:\Program Files\WindowsLoginGuard\open-admin.ps1"
-```
-
-3. Open **Recovery & Maintenance**.
-4. Select **Enable Maintenance Mode**.
-5. Confirm the warning.
-6. Enter a reason.
-7. Select an enrolled administrator.
-8. Enter that administrator's OTP or one-time recovery code.
-9. Enter the machine maintenance recovery key.
+1. Open **Recovery & Maintenance**.
+2. Select **Enable Maintenance Mode**.
+3. Confirm the warning.
+4. Enter a mandatory reason.
+5. Select an enrolled administrator.
+6. Enter that administrator's OTP or one-time recovery code.
+7. Enter the machine maintenance recovery key.
 
 When enabled:
 
-- Active verification gates are cleared
-- New protected sessions bypass OTP
-- The administrator, timestamp, source, and reason are audited
-- Maintenance remains enabled until explicitly disabled
+- active verification gates are cleared;
+- new protected sessions bypass OTP;
+- the actor, timestamp, source, and reason are audited;
+- maintenance remains enabled until explicitly disabled.
 
-### Restore OTP enforcement from the Administration Console
+To restore enforcement, select **Restore OTP Enforcement** and provide both an
+enrolled administrator credential and the machine maintenance key.
 
-1. Open the Administration Console.
-2. Open **Recovery & Maintenance**.
-3. Select **Restore OTP Enforcement**.
-4. Confirm the operation.
-5. Enter an enrolled administrator OTP or administrator recovery code.
-6. Enter the machine maintenance recovery key.
+Do not leave maintenance mode enabled after maintenance ends.
 
-Maintenance mode is then disabled and normal OTP enforcement resumes.
+### Rotate the maintenance recovery key
 
-> [!WARNING]
-> Do not leave maintenance mode enabled after the maintenance or incident has ended.
+When the key is lost or exposed:
 
-## Safe Mode and WinRE CLI recovery
+1. Open **Recovery & Maintenance**.
+2. Select **Rotate Maintenance Recovery Key**.
+3. Authorize with an enrolled administrator credential.
+4. Save the new one-time displayed key.
 
-The CLI is the emergency path when the Administration Console, Python runtime, verification UI, or Windows Login Guard service cannot be used normally.
+The old maintenance key is not required. The previous key stops working
+immediately.
 
-The CLI `enable` action is accepted only in Safe Mode or Windows Recovery Environment.
+## Safe Mode and WinRE recovery
 
-### Enable maintenance mode from Safe Mode
+Use `wlg-recovery.cmd` when the Administration console, Python runtime, service,
+or normal verification UI cannot be used.
 
-Enter Safe Mode using Windows Advanced Startup:
+Safe Mode:
 
-1. Open **Settings**.
-2. Open **System → Recovery**.
-3. Under **Advanced startup**, select **Restart now**.
-4. Select **Troubleshoot → Advanced options → Startup Settings**.
-5. Select **Restart**.
-6. Press `4` for Safe Mode or `5` for Safe Mode with Networking.
-7. Open Command Prompt as Administrator.
-8. Run:
+1. Open **Settings → System → Recovery**.
+2. Under **Advanced startup**, select **Restart now**.
+3. Select **Troubleshoot → Advanced options → Startup Settings**.
+4. Select **Restart**.
+5. Press `4` for Safe Mode or `5` for Safe Mode with Networking.
+6. Open Command Prompt as Administrator.
+7. Run:
 
 ```cmd
 cd /d "C:\Program Files\WindowsLoginGuard"
 wlg-recovery.cmd enable
 ```
 
-Enter the machine maintenance recovery key when prompted, then restart Windows normally.
-
-### Enable maintenance mode from WinRE
+WinRE:
 
 1. Hold `Shift` while selecting **Restart**.
-2. Select **Troubleshoot**.
-3. Select **Advanced options**.
-4. Select **Command Prompt**.
-5. Unlock the Windows volume if BitLocker requests its recovery key.
-6. Locate the installed Windows volume.
-
-In WinRE, Windows may be mounted as `D:` instead of `C:`:
+2. Select **Troubleshoot → Advanced options → Command Prompt**.
+3. Unlock BitLocker when requested.
+4. Locate the installed Windows drive. It may be `D:` rather than `C:`.
+5. Run, for example:
 
 ```cmd
 D:
@@ -367,35 +492,30 @@ The script searches mounted drive letters for:
 ProgramData\WindowsLoginGuard\secure\maintenance-key.sha256
 ```
 
-Restart Windows after maintenance mode is enabled.
-
-### Disable maintenance mode from Safe Mode or WinRE
-
-Run:
+Disable maintenance later with:
 
 ```cmd
 wlg-recovery.cmd disable
 ```
 
-The machine maintenance recovery key is required.
-
-The Administration Console remains the preferred way to restore enforcement when normal Windows is operational.
+The maintenance key is required for both actions. The `enable` action is
+accepted only in Safe Mode or WinRE.
 
 ## Configuration
 
-The active configuration is stored at:
+The active local configuration is stored at:
 
 ```text
 C:\ProgramData\WindowsLoginGuard\secure\config.json
 ```
 
-The release includes:
+The release contains:
 
 ```text
 config.example.json
 ```
 
-Important recovery defaults include:
+Important defaults include:
 
 ```json
 {
@@ -405,222 +525,130 @@ Important recovery defaults include:
 }
 ```
 
-The recovery threshold must not exceed `max_otp_attempts`.
+The F8 threshold cannot exceed the maximum OTP-attempt limit.
 
-Use the configuration script from an elevated PowerShell window:
-
-```powershell
-.\configure.ps1
-```
-
-Review and test configuration changes before production deployment.
-
-
-## Monitoring Dashboard
-
-The Administration Console opens with a read-only Dashboard showing service status and uptime, maintenance status, enrolled-account totals, active Windows sessions, verification gates, remaining timeout, failed attempts, and hidden F8 recovery availability.
-
-The Live Sessions table is read-only in v1.6.0. It cannot terminate sessions, bypass verification, approve users, or change policy.
-
-
-## Administration Console v1.7
-
-Version 1.7 refactors the Administration Console around a shared local IPC client and a persistent status bar.
-
-The Dashboard now:
-
-- retrieves real Windows sessions using the service session enumerator
-- reports service version, status, startup type, PID, start time, and uptime
-- refreshes automatically every five seconds
-- detects service restarts and reconnects automatically
-- identifies Admin Console/service version mismatches
-- shows health checks, notifications, live verification state, timers, failed attempts, F8 recovery readiness, and recent audit activity
-- displays specific IPC and service errors instead of blank cards
-
-The Configuration page now:
-
-- loads all controls and selection choices from the service schema
-- shows friendly labels for policy choices, including 30 minutes, 2 hours, and 4 hours
-- uses normal editable numeric text fields
-- validates numeric fields on focus loss and before Apply
-- keeps Apply disabled while values are invalid or unchanged
-- performs authoritative service-side validation before writing
-- saves atomically, restarts the service, reconnects, and refreshes the console
-
-The Diagnostics tab reports the Windows service, IPC endpoint, configuration, secure storage, audit storage, maintenance recovery key, Windows DPAPI, important file paths, and component versions.
-
-## Configuration management in the Administration Console
-
-Open the Administration Console:
-
-```powershell
-& "C:\Program Files\WindowsLoginGuard\open-admin.ps1"
-```
-
-Open the **Configuration** tab. Settings are separated into nested tabs for Verification, Recovery, Enrollment, Policy, Failure handling, and User interface. Each field includes a plain-language description.
-
-The configuration editor is schema-driven:
+The local Administration editor is schema-driven:
 
 - Boolean settings use checkboxes.
-- String policy settings use read-only dropdown selections.
-- Numeric settings use bounded spinboxes.
-- Numeric values are limited by both the UI and the service.
-- The F8 recovery threshold cannot exceed the maximum OTP-attempt limit.
-- Unknown settings are rejected.
-- Saving requires an enrolled administrator OTP or recovery code.
+- Policy choices use read-only dropdowns.
+- Numeric settings use bounded inputs.
+- Invalid or unchanged values keep **Apply** disabled.
+- The service performs authoritative validation.
 - Changes are previewed before confirmation.
-- The service writes `config.json` atomically and records the old and new values in the audit log.
-- After a successful change, the Administration Console automatically restarts the `WindowsLoginGuard` service so all runtime components use the new policy.
+- Saving requires an enrolled administrator credential.
+- `config.json` is written atomically.
+- Old and new values are audited.
+- The console restarts the service, reconnects, and refreshes automatically.
 
-Identity data, SIDs, secure paths, tokens, the issuer label, and internal protocol settings are not editable through this screen.
+Identity data, SIDs, protected paths, tokens, issuer labels, and internal IPC
+settings are not editable from the graphical configuration screen.
+
+Actual lab-VM configuration pages:
+
+![Verification configuration](docs/images/lab-configuration-verification.png)
+
+![Enrollment configuration](docs/images/lab-configuration-enrollment.png)
+
+![Policy configuration](docs/images/lab-configuration-policy.png)
+
+![Failure-action configuration](docs/images/lab-configuration-failure.png)
+
+![User-interface configuration](docs/images/lab-configuration-user-interface.png)
+
+Full reference:
+[Configuration Reference](docs/CONFIGURATION.md).
 
 ## Diagnostics and troubleshooting
 
-Run the diagnostic script from the extracted release folder:
+Run from the installed program directory:
 
 ```powershell
-.\diagnose.ps1
+& "C:\Program Files\WindowsLoginGuard\diagnose.ps1"
 ```
 
-### Check the installed version
+Check version and service:
 
 ```powershell
 Get-Content "C:\Program Files\WindowsLoginGuard\VERSION"
-```
-
-### Check service status
-
-```powershell
 Get-Service WindowsLoginGuard
 ```
 
-Expected state:
-
-```text
-Running
-```
-
-### Restart the service
+Restart the service:
 
 ```powershell
 Restart-Service WindowsLoginGuard -Force
 ```
 
-A service restart ends any session-only F8 recovery bypass.
+A service restart clears any session-only F8 recovery bypass.
 
-### Review the service log
-
-```powershell
-Get-Content `
-  "C:\ProgramData\WindowsLoginGuard\secure\guard.log" `
-  -Tail 100
-```
-
-### Review the administrative audit log
+Review logs:
 
 ```powershell
 Get-Content `
-  "C:\ProgramData\WindowsLoginGuard\secure\admin_audit.jsonl" `
-  -Tail 100
+    "C:\ProgramData\WindowsLoginGuard\secure\guard.log" `
+    -Tail 100
+
+Get-Content `
+    "C:\ProgramData\WindowsLoginGuard\secure\admin_audit.jsonl" `
+    -Tail 100
 ```
 
-The audit log includes verification challenge creation, invalid OTP attempts, successful verification, verification timeouts or attempt-limit actions, maintenance-key rotation, break-glass recovery, maintenance-mode changes, OTP resets, and recovery-code regeneration. OTP values and recovery keys are never written to the audit log.
+Audit records include challenge creation, invalid OTP attempts, successful
+verification, timeouts, attempt-limit actions, maintenance-key rotation,
+break-glass recovery, maintenance changes, OTP resets, recovery-code
+regeneration, configuration changes, and remote commands. OTP values and
+recovery keys are not written to the audit log.
 
-### OTP prompt does not appear
+Full procedures:
+[Troubleshooting](docs/TROUBLESHOOTING.md).
 
-Check:
+## Optional remote management
+
+Remote management may be added after local protection is installed and tested.
+Existing local enrollment is preserved.
+
+It adds central inventory, approval requests, background notifications, remote
+Approve/Deny, remote Lock/Log Off, and central audit.
+
+See [Optional Remote Management](REMOTE_MANAGEMENT.md).
+
+## Upgrade and uninstall
+
+Upgrade an installed protected PC:
 
 ```powershell
-Get-Service WindowsLoginGuard
-Get-Content "C:\Program Files\WindowsLoginGuard\VERSION"
-.\diagnose.ps1
+.\upgrade-to-v1.10.2.ps1
 ```
 
-Then review `guard.log`.
+The upgrade stops the service and active UI processes, creates a timestamped
+backup, replaces program modules, preserves protected state, validates service
+imports and hidden UI startup, restarts the service, and verifies operation.
 
-The upgrade script performs:
-
-- Python service-module import validation
-- Hidden Tk UI startup validation
-- Service restart validation
-
-### OTP field does not receive focus
-
-Confirm that v1.2.1 or later is installed. Lock the workstation again and verify that no other application is forcing itself to the foreground.
-
-### OTP codes are consistently rejected
-
-Confirm the Windows clock is synchronized:
-
-```powershell
-w32tm /query /status
-w32tm /resync
-```
-
-### F8 does nothing
-
-F8 recovery becomes available only after three failed OTP submissions. It remains hidden before the threshold is reached.
-
-### Administration Console does not open
-
-Run it from elevated PowerShell:
-
-```powershell
-& "C:\Program Files\WindowsLoginGuard\open-admin.ps1"
-```
-
-Then review the service status and `guard.log`.
-
-### Maintenance recovery key was lost
-
-The existing key cannot be recovered because only its SHA-256 hash is stored. Open the elevated Administration Console, go to **Recovery & Maintenance**, and select **Rotate Maintenance Recovery Key**. Authorize the action with an enrolled administrator OTP or one-time recovery code, then save the newly displayed key offline.
-
-## Upgrade
-
-To upgrade the installed release to v1.7.2:
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\upgrade-to-v1.7.2.ps1
-```
-
-The upgrade:
-
-- Stops the service
-- Stops active Login Guard UI processes
-- Creates a timestamped backup under the installation directory
-- Replaces the updated modules
-- Preserves enrollments, policies, recovery codes, management token, maintenance key, and maintenance state
-- Validates service imports
-- Runs a hidden UI startup check
-- Restarts and verifies the service
-
-After upgrading, confirm:
+Verify afterward:
 
 ```powershell
 Get-Content "C:\Program Files\WindowsLoginGuard\VERSION"
 Get-Service WindowsLoginGuard
 ```
 
-Expected version:
-
-```text
-1.7.2
-```
-
-## Uninstallation
-
-Run from an elevated PowerShell window:
+Uninstall:
 
 ```powershell
-.\uninstall.ps1
+& "C:\Program Files\WindowsLoginGuard\uninstall.ps1"
 ```
 
-Review the script first if protected enrollment data, logs, or configuration must be retained.
+Retain configuration and per-user enrollment:
+
+```powershell
+& "C:\Program Files\WindowsLoginGuard\uninstall.ps1" `
+    -KeepEnrollment
+```
+
+See [Upgrade and Uninstall](docs/UPGRADE_AND_UNINSTALL.md).
 
 ## File locations
 
-Installation:
+Program files:
 
 ```text
 C:\Program Files\WindowsLoginGuard
@@ -632,7 +660,13 @@ Protected data:
 C:\ProgramData\WindowsLoginGuard\secure
 ```
 
-Important protected files:
+Runtime IPC data:
+
+```text
+C:\ProgramData\WindowsLoginGuard\runtime
+```
+
+Important protected files include:
 
 ```text
 config.json
@@ -644,48 +678,24 @@ guard.log
 users\
 ```
 
-The maintenance recovery key itself is not stored there—only its SHA-256 hash.
+The plaintext maintenance recovery key is not stored there.
 
-## Release history
-
-- **v1.7.2** — Added an elevated desktop shortcut for the Administration Console and converted Audit and Recent Activity timestamps from stored UTC to the PC's local time zone for display
-- **v1.7.1** — Added one-time maintenance-key rotation, migrated approval duration choices to include 30 minutes, 2 hours, and 4 hours, retained failed-attempt counts for dashboard visibility, and audited verification challenges, invalid OTPs, successful verification, timeouts, and failure actions
-- **v1.7.0** — Refactored the Administration Console with a shared IPC client, functional auto-refreshing Dashboard, version checks, diagnostics, service restart/reconnect workflow, friendly schema choices, and normally editable bounded numeric fields
-- **v1.6.0** — Added a read-only monitoring dashboard with service health, maintenance state, enrollment totals, active sessions, verification status, timeout, failed-attempt, and F8 recovery visibility
-- **v1.5.2** — Fixed clipped Configuration action buttons, automatically restarts the service after policy changes, removed redundant selection-field wording, and added 30-minute, 2-hour, and 4-hour approval durations
-- **v1.5.1** — Configuration settings grouped into section tabs with plain-language field descriptions and visible numeric range guidance
-- **v1.5.0** — Schema-driven Admin Console configuration management with checkboxes, read-only selections, bounded numeric inputs, service-side validation, atomic reload, change preview, and audit history
-- **v1.4.1** — Fixed recovery Back rendering error, added representative UI render validation, and restored gate-before-UI startup ordering for faster isolated-desktop protection
-- **v1.4.0** — Administration Console maintenance enable/disable with enrolled administrator authorization, machine recovery key, reason, auditing, and complete illustrated README
-- **v1.3.1** — Hidden F8 recovery no longer opens automatically
-- **v1.3.0** — Hidden recovery threshold, visible formatted key entry, paused recovery timer, and Safe Mode/WinRE machine recovery
-- **v1.2.1** — OTP UI startup regression fix and deterministic OTP-field focus
-- **v1.2.0** — Initial pre-OTP recovery UI and WinRE fallback
-- **v1.1.0** — Initial maintenance recovery key
-- **v1.0.2** — Administration launcher runtime discovery
-- **v1.0.1** — Windows PowerShell RNG compatibility
-- **v1.0.0** — Administration Console, OTP reset, recovery regeneration, metadata, and audit logging
-- **v0.9.x** — Isolated-desktop and verification UI refinements
-- **v0.8.x** — User recovery codes and administrator approval improvements
-- **v0.1.0–v0.7.x** — Initial service, enrollment, storage, session, and Windows integration work
+See [File Locations](docs/FILE_LOCATIONS.md).
 
 ## Limitations
 
 - Windows Login Guard is post-login enforcement, not pre-authentication.
+- The Windows desktop may become visible briefly before the verification UI.
 - Local administrators remain part of the trust boundary.
-- A person with unrestricted offline access to an unencrypted Windows volume can alter local enforcement.
-- Machine maintenance mode intentionally bypasses OTP enforcement.
-- WinRE behavior and available utilities can vary across Windows builds.
-- Test installation, enrollment, OTP verification, user recovery codes, hidden F8 recovery, Admin Console maintenance, Safe Mode recovery, WinRE recovery, upgrades, and uninstall procedures before production deployment.
+- Unrestricted offline access to an unencrypted volume can alter enforcement.
+- Maintenance mode intentionally bypasses OTP enforcement.
+- WinRE drive letters and available tools vary across Windows builds.
+- A remote server outage prevents remote actions but not local OTP protection.
+- Test installation, enrollment, verification, recovery codes, hidden F8
+  recovery, maintenance, Safe Mode/WinRE recovery, upgrades, and uninstall
+  before production deployment.
 
-## License
-
-Add the selected open-source license before publishing the repository.
-
-
-### Desktop appears briefly before the OTP window
-
-For the strongest post-login presentation, set:
+For the strongest post-login presentation:
 
 ```json
 {
@@ -694,4 +704,42 @@ For the strongest post-login presentation, set:
 }
 ```
 
-v1.4.1 creates the verification gate before waiting for the UI process, allowing the first UI status poll to move directly to the isolated verification desktop. Windows Login Guard remains a post-login control, so it cannot provide the same pre-desktop guarantee as a Credential Provider.
+Windows Login Guard creates the verification gate before waiting for the UI
+process, allowing the first UI status poll to move directly to the isolated
+verification desktop. It remains a post-login control and cannot provide the
+same pre-desktop guarantee as a Credential Provider.
+
+## Documentation
+
+- [Documentation index](docs/README.md)
+- [Windows Installation Prerequisites](docs/PREREQUISITES.md)
+- [Installation and First Enrollment](docs/INSTALLATION.md)
+- [Finding a Windows Account SID](docs/ACCOUNT_SIDS.md)
+- [Local Administration Guide](docs/LOCAL_ADMINISTRATION.md)
+- [Configuration Reference](docs/CONFIGURATION.md)
+- [Recovery and Maintenance](docs/RECOVERY_AND_MAINTENANCE.md)
+- [Local Security Model](docs/SECURITY_MODEL.md)
+- [Diagnostics and Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Upgrade and Uninstall](docs/UPGRADE_AND_UNINSTALL.md)
+- [File Locations](docs/FILE_LOCATIONS.md)
+- [Lab Screenshot Notes](docs/SCREENSHOTS.md)
+- [Optional Remote Management](REMOTE_MANAGEMENT.md)
+- [Release Notes](RELEASE_NOTES_v1.10.2.md)
+
+
+## Video Demonstration
+
+Watch the complete Windows Login Guard v1.10.2 walkthrough, including:
+
+- prerequisite validation and installation;
+- account-specific TOTP enrollment;
+- recovery-code generation;
+- local Administration console;
+- verification and policy configuration;
+- maintenance and recovery controls;
+- session verification and administrator approval;
+- audit review.
+
+[![Watch the Windows Login Guard v1.10.2 demonstration](https://img.youtube.com/vi/aHYPmAdCe-E/hqdefault.jpg)](https://www.youtube.com/watch?v=aHYPmAdCe-E)
+
+[Watch directly on YouTube](https://www.youtube.com/watch?v=aHYPmAdCe-E)

@@ -1396,6 +1396,33 @@ class GuardWindow:
         self._bind_otp_entry(self.code_entry, self.verify_user)
         self._button("Verify", self.verify_user)
 
+        if self.current_response.get("remote_approval_available", False):
+            self._label(
+                "Or request approval from a registered administrator."
+            )
+            self._button(
+                "Request Approval",
+                self.request_remote_approval,
+            )
+
+    def request_remote_approval(self) -> None:
+        response = self._request_submission(
+            {"action": "request_remote_approval"}
+        )
+        if response is None:
+            return
+        if response.get("remote_approval_requested"):
+            self.current_key = ()
+            self.current_mode = ""
+            self.status.config(
+                text=(
+                    "Remote approval requested. Waiting for a registered "
+                    "administrator."
+                )
+            )
+            return
+        self._show_error(response)
+
     def verify_user(self) -> None:
         code = self.code_entry.get().strip()
         if not code:
@@ -1857,6 +1884,15 @@ class GuardWindow:
         self._label(
             f"Approve access for {response.get('username', 'this account')}."
         )
+        if response.get("remote_approval_available", False):
+            self._label(
+                "This request is being synchronized to the remote "
+                "management server. Keep this PC connected while waiting."
+            )
+            self._button(
+                "Use my OTP instead",
+                self.cancel_remote_approval,
+            )
 
         approval_mode = str(
             response.get("admin_approval_mode", "inline")
@@ -1934,6 +1970,19 @@ class GuardWindow:
             "Switch to an enrolled administrator account and approve the "
             "pending request from its Login Guard window."
         )
+
+    def cancel_remote_approval(self) -> None:
+        response = self._request_submission(
+            {"action": "cancel_remote_approval"}
+        )
+        if response is None:
+            return
+        if response.get("remote_approval_cancelled"):
+            self.current_key = ()
+            self.current_mode = ""
+            self.status.config(text="Remote approval cancelled. Enter your OTP.")
+            return
+        self._show_error(response)
 
     def approve_current_session(self) -> None:
         approver_label = self.inline_approver_combo.get()

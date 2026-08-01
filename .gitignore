@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Logs and crash output
+*.log
+*.log.*
+*.dmp
+
+# Runtime databases and journals
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*-wal
+*-shm
+
+# Certificates, keys, and protected blobs
+*.key
+*.pem
+*.pfx
+*.p12
+*.dpapi
+*.crt
+*.cer
+
+# Generated registration and client state
+registration.json
+pending-remote-registration.json
+remote-agent.json
+remote-admin.json
+launch-config.json
+management-config.json
+workstation-token*
+device-token*
+command-secret*
+server-config.json
+
+# Generated deployment bundles
+*.zip
+protected-pc-installer-*/
+
+# Local development
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

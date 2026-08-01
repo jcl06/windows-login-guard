@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import hmac
 import json
@@ -102,7 +103,13 @@ class SessionGate:
     recovery_active: bool = False
     recovery_deadline: float | None = None
     paused_deadline_remaining_seconds: int | None = None
+    challenge_id: str = field(
+        default_factory=lambda: secrets.token_urlsafe(18)
+    )
     created_at: float = field(default_factory=time.time)
+    created_at_utc: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
 
 
 @dataclass
@@ -339,6 +346,10 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
                     "admin_enable_maintenance",
                     "admin_disable_maintenance",
                     "admin_rotate_maintenance_key",
+                    "remote_approve_session",
+                    "remote_deny_session",
+                    "remote_lock_session",
+                    "remote_logoff_session",
                 }
                 if action in management_actions:
                     if not self._valid_management_token(token):
@@ -369,6 +380,10 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
                     response = self._verify_user(
                         session_id, str(request.get("code", "")).strip()
                     )
+                elif action == "request_remote_approval":
+                    response = self._request_remote_approval(session_id)
+                elif action == "cancel_remote_approval":
+                    response = self._cancel_remote_approval(session_id)
                 elif action == "recovery_begin":
                     response = self._recovery_begin(session_id)
                 elif action == "recovery_activity":
@@ -479,6 +494,65 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
                             request.get("approver_sid", "")
                         ),
                         code=str(request.get("code", "")).strip(),
+                    )
+                elif action == "remote_approve_session":
+                    response = self._remote_approve_session(
+                        target_session_id=int(
+                            request.get("target_session_id", -1)
+                        ),
+                        challenge_id=str(
+                            request.get("challenge_id", "")
+                        ),
+                        target_user_sid=str(
+                            request.get("target_user_sid", "")
+                        ),
+                        duration=str(request.get("duration", "")),
+                        request_id=str(request.get("request_id", "")),
+                        approver_name=str(
+                            request.get("approver_name", "")
+                        ),
+                    )
+                elif action == "remote_deny_session":
+                    response = self._remote_deny_session(
+                        target_session_id=int(
+                            request.get("target_session_id", -1)
+                        ),
+                        challenge_id=str(
+                            request.get("challenge_id", "")
+                        ),
+                        target_user_sid=str(
+                            request.get("target_user_sid", "")
+                        ),
+                        request_id=str(request.get("request_id", "")),
+                        approver_name=str(
+                            request.get("approver_name", "")
+                        ),
+                    )
+                elif action == "remote_lock_session":
+                    response = self._remote_lock_session(
+                        target_session_id=int(
+                            request.get("target_session_id", -1)
+                        ),
+                        target_user_sid=str(
+                            request.get("target_user_sid", "")
+                        ),
+                        request_id=str(request.get("request_id", "")),
+                        approver_name=str(
+                            request.get("approver_name", "")
+                        ),
+                    )
+                elif action == "remote_logoff_session":
+                    response = self._remote_logoff_session(
+                        target_session_id=int(
+                            request.get("target_session_id", -1)
+                        ),
+                        target_user_sid=str(
+                            request.get("target_user_sid", "")
+                        ),
+                        request_id=str(request.get("request_id", "")),
+                        approver_name=str(
+                            request.get("approver_name", "")
+                        ),
                     )
                 else:
                     response = {"ok": False, "error": "unknown_action"}
@@ -779,6 +853,35 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
             if dpapi_ok
             else "Machine-scope encryption failed its round-trip check.",
         )
+
+        remote_config_path = SECURE_DIR / "remote-agent.json"
+        remote_token_path = SECURE_DIR / "remote-device-token.dpapi"
+        if remote_config_path.exists():
+            try:
+                remote_status = win32serviceutil.QueryServiceStatus(
+                    "WindowsLoginGuardRemoteAgent"
+                )
+                remote_running = (
+                    int(remote_status[1]) == win32service.SERVICE_RUNNING
+                )
+            except Exception:
+                remote_running = False
+            remote_ready = remote_running and remote_token_path.exists()
+            add(
+                "remote_agent",
+                "Remote management agent",
+                "healthy" if remote_ready else "warning",
+                "The outbound Remote Agent is running and registered."
+                if remote_ready
+                else "Remote management is configured, but the Remote Agent is not fully operational.",
+            )
+        else:
+            add(
+                "remote_agent",
+                "Remote management agent",
+                "information",
+                "Remote management is not configured on this device.",
+            )
         return checks
 
     def _dashboard_sessions(self) -> list[dict[str, Any]]:
@@ -860,6 +963,24 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
                     "verification_required": gate is not None,
                     "verification_state": verification_state,
                     "verification_reason": reason,
+                    "challenge_id": (
+                        gate.challenge_id if gate is not None else ""
+                    ),
+                    "challenge_created_utc": (
+                        gate.created_at_utc if gate is not None else ""
+                    ),
+                    "allowed_approval_durations": (
+                        list(self.config["allowed_approval_durations"])
+                        if gate is not None
+                        and gate.kind == "approval_wait"
+                        else []
+                    ),
+                    "default_approval_duration": (
+                        str(self.config["default_approval_duration"])
+                        if gate is not None
+                        and gate.kind == "approval_wait"
+                        else ""
+                    ),
                     "remaining_seconds": remaining_seconds,
                     "failed_attempts": failed_attempts,
                     "last_failure_utc": self.session_last_failure_utc.get(
@@ -1936,6 +2057,9 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
         }
         response["failure_action"] = self._failure_action_for_gate(gate)
         if gate.kind == "verify":
+            response["remote_approval_available"] = (
+                self._remote_approval_available()
+            )
             response["failed_attempts"] = int(gate.failed_attempts)
             response["recovery_available"] = bool(
                 gate.failed_attempts >= self._recovery_threshold()
@@ -1990,6 +2114,10 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
             response.update(
                 {
                     "admin_approval_mode": mode,
+                    "remote_approval_available": (
+                        self._remote_approval_available()
+                    ),
+                    "challenge_id": gate.challenge_id,
                     "allowed_durations": self.config[
                         "allowed_approval_durations"
                     ],
@@ -2002,6 +2130,467 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
                 response["approvers"] = self._admin_approvers()
 
         return response
+
+    @staticmethod
+    def _remote_approval_available() -> bool:
+        return bool(
+            (SECURE_DIR / "remote-agent.json").is_file()
+            and (SECURE_DIR / "remote-device-token.dpapi").is_file()
+        )
+
+    def _request_remote_approval(
+        self,
+        session_id: int,
+    ) -> dict[str, Any]:
+        if not self._remote_approval_available():
+            return {
+                "ok": False,
+                "error": "remote_approval_unavailable",
+                "message": "This protected PC is not connected to a management server.",
+            }
+
+        with self.lock:
+            gate = self.gates.get(session_id)
+            if gate is None or gate.kind != "verify":
+                return {
+                    "ok": False,
+                    "error": "no_verification_challenge",
+                }
+            if gate.recovery_active:
+                return {
+                    "ok": False,
+                    "error": "recovery_in_progress",
+                }
+            if gate.deadline is not None and time.monotonic() >= gate.deadline:
+                return {"ok": False, "error": "expired"}
+
+            gate.kind = "approval_wait"
+            gate.challenge_id = secrets.token_urlsafe(18)
+            gate.created_at = time.time()
+            gate.created_at_utc = datetime.now(timezone.utc).isoformat()
+            gate.failed_attempts = 0
+            gate.recovery_active = False
+            gate.recovery_deadline = None
+            gate.timeout_seconds = int(
+                self.config["approval_timeout_seconds"]
+            )
+            gate.deadline = time.monotonic() + gate.timeout_seconds
+            gate.activation_deadline = None
+
+        self._append_admin_audit(
+            action="remote_approval_requested",
+            target_sid=gate.user_sid,
+            target_username=gate.username,
+            actor_sid=gate.user_sid,
+            actor_username=gate.username,
+            details={
+                "session_id": session_id,
+                "challenge_id": gate.challenge_id,
+                "reason": gate.reason,
+                "timeout_seconds": gate.timeout_seconds,
+            },
+        )
+        self.logger.warning(
+            "Remote approval requested: session=%s user=%s challenge=%s",
+            session_id,
+            gate.username,
+            gate.challenge_id,
+        )
+        return {
+            "ok": True,
+            "remote_approval_requested": True,
+            "challenge_id": gate.challenge_id,
+            "remaining_seconds": gate.timeout_seconds,
+        }
+
+    def _cancel_remote_approval(
+        self,
+        session_id: int,
+    ) -> dict[str, Any]:
+        with self.lock:
+            gate = self.gates.get(session_id)
+            if gate is None or gate.kind != "approval_wait":
+                return {
+                    "ok": False,
+                    "error": "no_remote_approval_request",
+                }
+            old_challenge_id = gate.challenge_id
+            gate.kind = "verify"
+            gate.challenge_id = secrets.token_urlsafe(18)
+            gate.created_at = time.time()
+            gate.created_at_utc = datetime.now(timezone.utc).isoformat()
+            gate.failed_attempts = 0
+            gate.timeout_seconds = int(self.config["timeout_seconds"])
+            gate.deadline = time.monotonic() + gate.timeout_seconds
+            gate.activation_deadline = None
+
+        self._append_admin_audit(
+            action="remote_approval_cancelled_by_user",
+            target_sid=gate.user_sid,
+            target_username=gate.username,
+            actor_sid=gate.user_sid,
+            actor_username=gate.username,
+            details={
+                "session_id": session_id,
+                "challenge_id": old_challenge_id,
+            },
+        )
+        return {
+            "ok": True,
+            "remote_approval_cancelled": True,
+        }
+
+    def _remote_command_gate(
+        self,
+        *,
+        target_session_id: int,
+        challenge_id: str,
+        target_user_sid: str,
+    ) -> tuple[SessionGate | None, dict[str, Any] | None]:
+        with self.lock:
+            gate = self.gates.get(target_session_id)
+        if gate is None or gate.kind != "approval_wait":
+            return None, {
+                "ok": False,
+                "error": "no_approval_request",
+            }
+        if gate.deadline is not None and time.monotonic() >= gate.deadline:
+            return None, {
+                "ok": False,
+                "error": "approval_request_expired",
+            }
+        if not challenge_id or not hmac.compare_digest(
+            gate.challenge_id,
+            challenge_id,
+        ):
+            return None, {
+                "ok": False,
+                "error": "approval_challenge_mismatch",
+            }
+        if target_user_sid and not hmac.compare_digest(
+            gate.user_sid,
+            target_user_sid,
+        ):
+            return None, {
+                "ok": False,
+                "error": "approval_user_mismatch",
+            }
+        return gate, None
+
+    def _remote_session_identity(
+        self,
+        *,
+        target_session_id: int,
+        target_user_sid: str,
+    ) -> tuple[SessionIdentity | None, dict[str, Any] | None]:
+        if target_session_id <= 0:
+            return None, {
+                "ok": False,
+                "error": "invalid_target_session",
+            }
+        try:
+            identity = self._session_identity(target_session_id)
+        except Exception as exc:
+            self.logger.warning(
+                "Unable to resolve remote target session %s: %s",
+                target_session_id,
+                exc,
+            )
+            return None, {
+                "ok": False,
+                "error": "target_session_unavailable",
+                "message": str(exc),
+            }
+        if identity is None:
+            return None, {
+                "ok": False,
+                "error": "target_session_unavailable",
+            }
+        if (
+            target_user_sid
+            and not hmac.compare_digest(
+                identity.user_sid,
+                target_user_sid,
+            )
+        ):
+            return None, {
+                "ok": False,
+                "error": "target_session_identity_changed",
+            }
+        return identity, None
+
+    def _disconnect_session_for_lock(self, session_id: int) -> None:
+        disconnect = getattr(
+            win32ts,
+            "WTSDisconnectSession",
+            None,
+        )
+        if callable(disconnect):
+            disconnect(
+                win32ts.WTS_CURRENT_SERVER_HANDLE,
+                session_id,
+                False,
+            )
+            return
+
+        result = ctypes.windll.Wtsapi32.WTSDisconnectSession(
+            0,
+            session_id,
+            False,
+        )
+        if not result:
+            raise ctypes.WinError()
+
+    def _remote_lock_session(
+        self,
+        *,
+        target_session_id: int,
+        target_user_sid: str,
+        request_id: str,
+        approver_name: str,
+    ) -> dict[str, Any]:
+        identity, error = self._remote_session_identity(
+            target_session_id=target_session_id,
+            target_user_sid=target_user_sid,
+        )
+        if error is not None or identity is None:
+            return error or {
+                "ok": False,
+                "error": "remote_lock_failed",
+            }
+
+        state = self._enumerate_sessions().get(target_session_id)
+        if state is None:
+            return {
+                "ok": False,
+                "error": "target_session_unavailable",
+            }
+        if state == int(getattr(win32ts, "WTSDisconnected", 4)):
+            return {
+                "ok": True,
+                "locked": True,
+                "already_disconnected": True,
+            }
+
+        actor_name = (
+            approver_name.strip()[:200]
+            or "Remote administrator"
+        )
+        try:
+            self._disconnect_session_for_lock(target_session_id)
+        except Exception as exc:
+            self.logger.exception(
+                "Remote lock failed for session %s",
+                target_session_id,
+            )
+            return {
+                "ok": False,
+                "error": "windows_session_lock_failed",
+                "message": str(exc),
+            }
+
+        self._append_admin_audit(
+            action="remote_session_locked",
+            target_sid=identity.user_sid,
+            target_username=identity.username,
+            actor_sid=f"remote:{request_id[:80]}",
+            actor_username=actor_name,
+            details={
+                "session_id": target_session_id,
+                "request_id": request_id,
+                "method": "WTSDisconnectSession",
+            },
+        )
+        self.logger.warning(
+            "Session %s for %s locked remotely by %s",
+            target_session_id,
+            identity.username,
+            actor_name,
+        )
+        return {
+            "ok": True,
+            "locked": True,
+            "session_id": target_session_id,
+            "username": identity.username,
+            "locked_by": actor_name,
+        }
+
+    def _remote_logoff_session(
+        self,
+        *,
+        target_session_id: int,
+        target_user_sid: str,
+        request_id: str,
+        approver_name: str,
+    ) -> dict[str, Any]:
+        identity, error = self._remote_session_identity(
+            target_session_id=target_session_id,
+            target_user_sid=target_user_sid,
+        )
+        if error is not None or identity is None:
+            return error or {
+                "ok": False,
+                "error": "remote_logoff_failed",
+            }
+
+        actor_name = (
+            approver_name.strip()[:200]
+            or "Remote administrator"
+        )
+        try:
+            win32ts.WTSLogoffSession(
+                win32ts.WTS_CURRENT_SERVER_HANDLE,
+                target_session_id,
+                False,
+            )
+        except Exception as exc:
+            self.logger.exception(
+                "Remote logoff failed for session %s",
+                target_session_id,
+            )
+            return {
+                "ok": False,
+                "error": "windows_session_logoff_failed",
+                "message": str(exc),
+            }
+
+        with self.lock:
+            self.gates.pop(target_session_id, None)
+            self.client_actions.pop(target_session_id, None)
+
+        self._append_admin_audit(
+            action="remote_session_logged_off",
+            target_sid=identity.user_sid,
+            target_username=identity.username,
+            actor_sid=f"remote:{request_id[:80]}",
+            actor_username=actor_name,
+            details={
+                "session_id": target_session_id,
+                "request_id": request_id,
+            },
+        )
+        self.logger.warning(
+            "Session %s for %s logged off remotely by %s",
+            target_session_id,
+            identity.username,
+            actor_name,
+        )
+        return {
+            "ok": True,
+            "logged_off": True,
+            "session_id": target_session_id,
+            "username": identity.username,
+            "logged_off_by": actor_name,
+        }
+
+    def _remote_approve_session(
+        self,
+        *,
+        target_session_id: int,
+        challenge_id: str,
+        target_user_sid: str,
+        duration: str,
+        request_id: str,
+        approver_name: str,
+    ) -> dict[str, Any]:
+        gate, error = self._remote_command_gate(
+            target_session_id=target_session_id,
+            challenge_id=challenge_id,
+            target_user_sid=target_user_sid,
+        )
+        if error is not None or gate is None:
+            return error or {"ok": False, "error": "approval_failed"}
+        if duration not in self.config["allowed_approval_durations"]:
+            return {"ok": False, "error": "duration_not_allowed"}
+
+        actor_name = approver_name.strip()[:200] or "Remote administrator"
+        grant = self._create_approval_grant(
+            gate=gate,
+            approver_sid=f"remote:{request_id[:80]}",
+            approver_name=actor_name,
+            duration=duration,
+        )
+        with self.lock:
+            self.gates.pop(target_session_id, None)
+
+        self._append_admin_audit(
+            action="remote_session_approved",
+            target_sid=gate.user_sid,
+            target_username=gate.username,
+            actor_sid=f"remote:{request_id[:80]}",
+            actor_username=actor_name,
+            details={
+                "session_id": target_session_id,
+                "challenge_id": challenge_id,
+                "request_id": request_id,
+                "duration": duration,
+                "grant_type": grant.grant_type,
+                "expires_at_utc": grant.expires_at_utc,
+            },
+        )
+        self.logger.warning(
+            "Session %s for %s approved remotely by %s, duration=%s",
+            target_session_id,
+            gate.username,
+            actor_name,
+            duration,
+        )
+        return {
+            "ok": True,
+            "approved": True,
+            "grant_type": grant.grant_type,
+            "expires_at_utc": grant.expires_at_utc,
+            "approved_by": actor_name,
+        }
+
+    def _remote_deny_session(
+        self,
+        *,
+        target_session_id: int,
+        challenge_id: str,
+        target_user_sid: str,
+        request_id: str,
+        approver_name: str,
+    ) -> dict[str, Any]:
+        gate, error = self._remote_command_gate(
+            target_session_id=target_session_id,
+            challenge_id=challenge_id,
+            target_user_sid=target_user_sid,
+        )
+        if error is not None or gate is None:
+            return error or {"ok": False, "error": "denial_failed"}
+
+        actor_name = approver_name.strip()[:200] or "Remote administrator"
+        self._append_admin_audit(
+            action="remote_session_denied",
+            target_sid=gate.user_sid,
+            target_username=gate.username,
+            actor_sid=f"remote:{request_id[:80]}",
+            actor_username=actor_name,
+            details={
+                "session_id": target_session_id,
+                "challenge_id": challenge_id,
+                "request_id": request_id,
+                "configured_failure_action": (
+                    self._failure_action_for_gate(gate)
+                ),
+            },
+        )
+        self.logger.warning(
+            "Session %s for %s denied remotely by %s",
+            target_session_id,
+            gate.username,
+            actor_name,
+        )
+        self._schedule_gate_failure(
+            target_session_id,
+            trigger="remote_denied",
+        )
+        return {
+            "ok": True,
+            "denied": True,
+            "failure_action": self._failure_action_for_gate(gate),
+        }
 
     def _verify_user(self, session_id: int, code: str) -> dict[str, Any]:
         with self.lock:
