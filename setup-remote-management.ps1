@@ -75,11 +75,11 @@ function Show-LinkExistingAdministrator {
     )
     Write-Host ""
     Write-Host (
-        "The required protected-device identity-attestation endpoint is " +
-        "not enabled in the read-only v1.8.4 foundation."
+        "The administrator used during install-remote-server.ps1 is " +
+        "already linked automatically."
     ) -ForegroundColor Yellow
     Write-Host (
-        "This option does not create another OTP or change identity state."
+        "This helper does not link an additional local administrator."
     ) -ForegroundColor Yellow
 }
 
@@ -102,35 +102,24 @@ function New-IndependentRemoteAdministrator {
 }
 
 function New-ProtectedDeviceRegistration {
-    param([Parameter(Mandatory = $true)][hashtable]$Defaults)
-
     $label = Read-RequiredValue `
         -Prompt "Protected device name or label"
-    $result = Invoke-InstalledScript `
-        -Name "new-device-enrollment-token.ps1" `
-        -Parameters @{ Label = $label; PassThru = $true }
-
-    Write-Host ""
-    Write-Host "Protected-device registration code created." `
-        -ForegroundColor Green
-    Write-Host ""
-    Write-Host "On the protected computer, open elevated PowerShell in the"
-    Write-Host "extracted v1.8.4 package and run:"
+    Invoke-InstalledScript `
+        -Name "new-protected-pc-installer.ps1" `
+        -Parameters @{
+            Label = $label
+            ValidHours = 24
+        }
     Write-Host ""
     Write-Host (
-        '.\configure-remote-endpoint.ps1 ' +
-        '-ServerUrl "' + $Defaults.ServerUrl + '" ' +
-        '-RegistrationCode "' + $result.RegistrationCode + '" ' +
-        '-ServerCertificate "C:\Path\To\server.crt"'
+        "Transfer the generated ZIP securely to the protected PC, extract " +
+        "it, and run install-protected-pc.ps1 as Administrator."
+    ) -ForegroundColor Green
+    Write-Host (
+        "The server URL, public certificate, display name, and single-use " +
+        "registration code are already included in the bundle."
     )
-    Write-Host ""
-    Write-Host "Copy this certificate to the protected computer:"
-    Write-Host "  $($Defaults.ServerCertificate)"
-    Write-Host ""
-    Write-Host "The registration code is single-use." `
-        -ForegroundColor Yellow
 }
-
 function New-AdminComputerRegistration {
     param([Parameter(Mandatory = $true)][hashtable]$Defaults)
 
@@ -145,7 +134,7 @@ function New-AdminComputerRegistration {
         -ForegroundColor Green
     Write-Host ""
     Write-Host "On the administrator computer:"
-    Write-Host "  1. Copy the extracted v1.8.4 package and server.crt."
+    Write-Host "  1. Copy the extracted current release and server.crt."
     Write-Host "  2. Run .\install-remote-admin.ps1 as Administrator."
     Write-Host "  3. Open Windows Login Guard Remote Administration."
     Write-Host "  4. Enter these values:"

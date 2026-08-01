@@ -6,6 +6,17 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $SourceDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$VersionPath = Join-Path $SourceDir "VERSION"
+if (-not (Test-Path -LiteralPath $VersionPath)) {
+    throw "VERSION is missing from the extracted release."
+}
+$ReleaseVersion = (
+    Get-Content -LiteralPath $VersionPath -Raw
+).Trim()
+if ([string]::IsNullOrWhiteSpace($ReleaseVersion)) {
+    throw "VERSION is empty in the extracted release."
+}
+$VersionLabel = $ReleaseVersion -replace '[^A-Za-z0-9._-]', '-'
 $SecureDir = Join-Path $env:ProgramData "WindowsLoginGuard\secure"
 $ConfigPath = Join-Path $SecureDir "config.json"
 $RemoteAgentConfigPath = Join-Path $SecureDir "remote-agent.json"
@@ -38,7 +49,7 @@ Stop-Service WindowsLoginGuard -Force
 Stop-WlgUiProcesses
 
 $BackupDir = Join-Path $InstallDir (
-    "backup-before-v1.10.2-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+    "backup-before-$VersionLabel-" + (Get-Date -Format "yyyyMMdd-HHmmss")
 )
 New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
 
@@ -140,26 +151,26 @@ $PythonExe = Join-Path `
     --upgrade `
     -r (Join-Path $InstallDir "requirements.txt")
 if ($LASTEXITCODE -ne 0) {
-    throw "v1.10.2 dependency update failed."
+    throw "Dependency update failed for release $ReleaseVersion."
 }
 
 Push-Location $InstallDir
 try {
     & $PythonExe -c (
         "import common, service; " +
-        "print('v1.10.2 local protection modules validated')"
+        "print('Local protection modules validated')"
     )
     if ($LASTEXITCODE -ne 0) {
-        throw "v1.10.2 local module validation failed."
+        throw "Local module validation failed for release $ReleaseVersion."
     }
 
     if ($RemoteEndpointEnabled) {
         & $PythonExe -c (
             "import remote_common, remote_agent; " +
-            "print('v1.10.2 remote endpoint modules validated')"
+            "print('Remote endpoint modules validated')"
         )
         if ($LASTEXITCODE -ne 0) {
-            throw "v1.10.2 remote endpoint validation failed."
+            throw "Remote endpoint validation failed for release $ReleaseVersion."
         }
     }
 
@@ -167,7 +178,7 @@ try {
         (Join-Path $InstallDir "ui.pyw") `
         --startup-check
     if ($LASTEXITCODE -ne 0) {
-        throw "v1.10.2 UI startup validation failed."
+        throw "UI startup validation failed for release $ReleaseVersion."
     }
 }
 finally {
@@ -207,7 +218,7 @@ $AdminShortcutPath = New-WlgAdminDesktopShortcut `
     -InstallDir $InstallDir
 
 Write-Host ""
-Write-Host "Upgrade to v1.10.2 complete." -ForegroundColor Green
+Write-Host "Upgrade to $ReleaseVersion complete." -ForegroundColor Green
 Write-Host (
     "Local enrollment, policy, recovery, maintenance, and audit data " +
     "were preserved."

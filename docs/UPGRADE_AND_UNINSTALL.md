@@ -4,7 +4,7 @@ Upgrade:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-.\upgrade-to-v1.10.2.ps1
+.\upgrade.ps1
 ```
 
 The upgrade stops the service and UI processes, creates a timestamped backup,

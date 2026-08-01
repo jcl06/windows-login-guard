@@ -123,6 +123,18 @@ class PendingClientAction:
 
 
 @dataclass
+class PendingServiceLock:
+    request_id: str
+    policy_key: str
+    gate_kind: str
+    reason: str
+    trigger: str
+    deadline: float
+    event: threading.Event = field(default_factory=threading.Event)
+    cancelled: bool = False
+
+
+@dataclass
 class PendingEnrollment:
     user_sid: str
     username: str
@@ -172,6 +184,7 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
         self.ui_tokens: dict[int, str] = {}
         self.ui_launch_locks: dict[int, threading.Lock] = {}
         self.client_actions: dict[int, PendingClientAction] = {}
+        self.service_locks: dict[int, PendingServiceLock] = {}
         self.recovery_session_bypasses: set[int] = set()
         self.session_failed_attempts: dict[int, int] = {}
         self.session_last_failure_utc: dict[int, str] = {}
@@ -226,6 +239,9 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
             self._mark_ui_presence(session_id, False, "default")
             self._invalidate_until_lock_grant(session_id)
             with self.lock:
+                pending_lock = self.service_locks.get(session_id)
+                if pending_lock is not None:
+                    pending_lock.event.set()
                 self.gates.pop(session_id, None)
                 self.client_actions.pop(session_id, None)
                 self.recovery_session_bypasses.discard(session_id)
@@ -247,6 +263,9 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
 
         if event_type == WTS_SESSION_LOGOFF:
             with self.lock:
+                pending_lock = self.service_locks.get(session_id)
+                if pending_lock is not None:
+                    pending_lock.event.set()
                 self.gates.pop(session_id, None)
                 self.session_grants.pop(session_id, None)
                 self.ui_last_seen.pop(session_id, None)
@@ -1726,6 +1745,10 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
             return error or {"ok": False, "error": "recovery_failed"}
 
         with self.lock:
+            pending_lock = self.service_locks.pop(session_id, None)
+            if pending_lock is not None:
+                pending_lock.cancelled = True
+                pending_lock.event.set()
             self.recovery_session_bypasses.add(session_id)
             self.gates.pop(session_id, None)
             self.client_actions.pop(session_id, None)
@@ -1808,6 +1831,10 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
         )
 
         with self.lock:
+            for pending_lock in self.service_locks.values():
+                pending_lock.cancelled = True
+                pending_lock.event.set()
+            self.service_locks.clear()
             self.gates.clear()
             self.client_actions.clear()
             self.recovery_session_bypasses.clear()
@@ -2455,6 +2482,13 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
             }
 
         with self.lock:
+            pending_lock = self.service_locks.pop(
+                target_session_id,
+                None,
+            )
+            if pending_lock is not None:
+                pending_lock.cancelled = True
+                pending_lock.event.set()
             self.gates.pop(target_session_id, None)
             self.client_actions.pop(target_session_id, None)
 
@@ -3123,7 +3157,10 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
             gate = self.gates.get(session_id)
             if gate is None or gate.kind == "enroll":
                 return
-            if session_id in self.client_actions:
+            if (
+                session_id in self.client_actions
+                or session_id in self.service_locks
+            ):
                 return
             action = self._failure_action_for_gate(gate)
             policy_key = self._failure_policy_key(gate)
@@ -3173,31 +3210,254 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
             return
 
         if action == "lock":
-            pending = PendingClientAction(
+            timeout_seconds = int(
+                self.config["lock_action_timeout_seconds"]
+            )
+            pending = PendingServiceLock(
                 request_id=secrets.token_urlsafe(18),
-                action="lock",
                 policy_key=policy_key,
                 gate_kind=gate.kind,
                 reason=gate.reason,
-                deadline=(
-                    time.monotonic()
-                    + int(self.config["lock_action_timeout_seconds"])
-                ),
+                trigger=trigger,
+                deadline=time.monotonic() + timeout_seconds,
             )
             with self.lock:
                 current = self.gates.get(session_id)
                 if current is None:
                     return
                 current.deadline = None
-                self.client_actions[session_id] = pending
-            self.logger.warning(
-                "Lock command queued for session %s; request=%s",
-                session_id,
-                pending.request_id,
+                current.activation_deadline = None
+                self.service_locks[session_id] = pending
+            self._execute_verification_lock(
+                session_id=session_id,
+                gate=gate,
+                pending=pending,
             )
             return
 
         self.logger.error("Unsupported failure action %r", action)
+        self._logoff_session(session_id, gate.username)
+
+    def _execute_verification_lock(
+        self,
+        *,
+        session_id: int,
+        gate: SessionGate,
+        pending: PendingServiceLock,
+    ) -> None:
+        timeout_seconds = int(
+            self.config["lock_action_timeout_seconds"]
+        )
+        details = {
+            "session_id": session_id,
+            "request_id": pending.request_id,
+            "kind": gate.kind,
+            "reason": gate.reason,
+            "trigger": pending.trigger,
+            "policy": pending.policy_key,
+            "method": "WTSDisconnectSession",
+            "timeout_seconds": timeout_seconds,
+        }
+        self._append_admin_audit(
+            action="verification_lock_requested",
+            target_sid=gate.user_sid,
+            target_username=gate.username,
+            actor_sid="",
+            actor_username="Windows Login Guard Service",
+            details=details,
+        )
+        self.logger.warning(
+            "Service requesting lock for session %s; request=%s method=%s",
+            session_id,
+            pending.request_id,
+            details["method"],
+        )
+
+        try:
+            self._disconnect_session_for_lock(session_id)
+        except Exception as exc:
+            self.logger.exception(
+                "Service lock request failed for session %s request=%s",
+                session_id,
+                pending.request_id,
+            )
+            self._finish_service_lock_wait(
+                session_id=session_id,
+                pending=pending,
+            )
+            failure_details = {
+                **details,
+                "failure": "request_failed",
+                "error": str(exc),
+            }
+            self._append_admin_audit(
+                action="verification_lock_failed",
+                target_sid=gate.user_sid,
+                target_username=gate.username,
+                actor_sid="",
+                actor_username="Windows Login Guard Service",
+                details=failure_details,
+            )
+            self._apply_verification_lock_fallback(
+                session_id=session_id,
+                gate=gate,
+                pending=pending,
+                failure="request_failed",
+                error=str(exc),
+            )
+            return
+
+        confirmation = ""
+        while not self.stop_requested.is_set():
+            if pending.cancelled:
+                return
+
+            remaining = pending.deadline - time.monotonic()
+            if remaining <= 0:
+                break
+
+            pending.event.wait(timeout=min(0.25, remaining))
+            if pending.cancelled:
+                return
+            if pending.event.is_set():
+                confirmation = "wts_session_event"
+                break
+
+            try:
+                states = self._enumerate_sessions()
+            except Exception:
+                self.logger.exception(
+                    "Unable to confirm lock state for session %s request=%s",
+                    session_id,
+                    pending.request_id,
+                )
+                continue
+
+            if session_id not in states:
+                confirmation = "session_ended"
+                break
+            state = states[session_id]
+            if state == int(getattr(win32ts, "WTSDisconnected", 4)):
+                confirmation = "wts_disconnected"
+                break
+
+        if confirmation:
+            self._finish_service_lock_wait(
+                session_id=session_id,
+                pending=pending,
+                clear_gate=True,
+            )
+            self._append_admin_audit(
+                action="verification_lock_completed",
+                target_sid=gate.user_sid,
+                target_username=gate.username,
+                actor_sid="",
+                actor_username="Windows Login Guard Service",
+                details={
+                    **details,
+                    "confirmation": confirmation,
+                },
+            )
+            self.logger.warning(
+                "Service lock completed for session %s request=%s "
+                "confirmation=%s",
+                session_id,
+                pending.request_id,
+                confirmation,
+            )
+            return
+
+        if self.stop_requested.is_set():
+            self._finish_service_lock_wait(
+                session_id=session_id,
+                pending=pending,
+            )
+            return
+
+        self._finish_service_lock_wait(
+            session_id=session_id,
+            pending=pending,
+        )
+        self._append_admin_audit(
+            action="verification_lock_failed",
+            target_sid=gate.user_sid,
+            target_username=gate.username,
+            actor_sid="",
+            actor_username="Windows Login Guard Service",
+            details={
+                **details,
+                "failure": "confirmation_timeout",
+            },
+        )
+        self.logger.error(
+            "Service lock was not confirmed for session %s request=%s "
+            "within %s seconds",
+            session_id,
+            pending.request_id,
+            timeout_seconds,
+        )
+        self._apply_verification_lock_fallback(
+            session_id=session_id,
+            gate=gate,
+            pending=pending,
+            failure="confirmation_timeout",
+            error="",
+        )
+
+    def _finish_service_lock_wait(
+        self,
+        *,
+        session_id: int,
+        pending: PendingServiceLock,
+        clear_gate: bool = False,
+    ) -> None:
+        with self.lock:
+            current = self.service_locks.get(session_id)
+            if current is pending:
+                self.service_locks.pop(session_id, None)
+            if clear_gate:
+                self.gates.pop(session_id, None)
+                self.client_actions.pop(session_id, None)
+
+    def _apply_verification_lock_fallback(
+        self,
+        *,
+        session_id: int,
+        gate: SessionGate,
+        pending: PendingServiceLock,
+        failure: str,
+        error: str,
+    ) -> None:
+        if pending.cancelled:
+            return
+        fallback = str(self.config["lock_failure_action"])
+        self._append_admin_audit(
+            action="verification_lock_fallback_applied",
+            target_sid=gate.user_sid,
+            target_username=gate.username,
+            actor_sid="",
+            actor_username="Windows Login Guard Service",
+            details={
+                "session_id": session_id,
+                "request_id": pending.request_id,
+                "policy": pending.policy_key,
+                "trigger": pending.trigger,
+                "lock_failure": failure,
+                "lock_error": error,
+                "fallback": fallback,
+            },
+        )
+        self.logger.error(
+            "Applying lock-failure fallback for session %s request=%s "
+            "fallback=%s failure=%s",
+            session_id,
+            pending.request_id,
+            fallback,
+            failure,
+        )
+        if fallback == "allow":
+            self._clear_gate(session_id)
+            return
         self._logoff_session(session_id, gate.username)
 
     def _client_action_result(
@@ -3259,14 +3519,41 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
     def _logoff_session(self, session_id: int, username: str) -> None:
         try:
             win32ts.WTSLogoffSession(
-                win32ts.WTS_CURRENT_SERVER_HANDLE, session_id, False
+                win32ts.WTS_CURRENT_SERVER_HANDLE,
+                session_id,
+                False,
             )
-        except Exception:
-            self.logger.exception("Failed to log off session %s", session_id)
-        finally:
-            with self.lock:
-                self.gates.pop(session_id, None)
-                self.client_actions.pop(session_id, None)
+        except Exception as exc:
+            self.logger.exception(
+                "Failed to log off session %s",
+                session_id,
+            )
+            try:
+                identity = self._session_identity(session_id)
+            except Exception:
+                identity = None
+            self._append_admin_audit(
+                action="windows_session_logoff_failed",
+                target_sid=identity.user_sid if identity else "",
+                target_username=(
+                    identity.username if identity else username
+                ),
+                actor_sid="",
+                actor_username="Windows Login Guard Service",
+                details={
+                    "session_id": session_id,
+                    "error": str(exc),
+                },
+            )
+            return
+
+        with self.lock:
+            pending_lock = self.service_locks.pop(session_id, None)
+            if pending_lock is not None:
+                pending_lock.cancelled = True
+                pending_lock.event.set()
+            self.gates.pop(session_id, None)
+            self.client_actions.pop(session_id, None)
         self.logger.warning(
             "Windows logoff initiated for session %s (%s)",
             session_id,
@@ -3747,6 +4034,12 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
             if session_id not in current:
                 self._clear_gate(session_id)
                 with self.lock:
+                    pending_lock = self.service_locks.pop(
+                        session_id,
+                        None,
+                    )
+                    if pending_lock is not None:
+                        pending_lock.event.set()
                     self.client_actions.pop(session_id, None)
                     self.session_failed_attempts.pop(session_id, None)
                     self.session_last_failure_utc.pop(session_id, None)

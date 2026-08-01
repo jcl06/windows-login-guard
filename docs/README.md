@@ -24,7 +24,7 @@
 
 ## Video Demonstration
 
-Watch the complete Windows Login Guard v1.10.2 walkthrough, including:
+Watch the complete Windows Login Guard walkthrough, including:
 
 - prerequisite validation and installation;
 - account-specific TOTP enrollment;
@@ -35,6 +35,6 @@ Watch the complete Windows Login Guard v1.10.2 walkthrough, including:
 - session verification and administrator approval;
 - audit review.
 
-[![Watch the Windows Login Guard v1.10.2 demonstration](https://img.youtube.com/vi/aHYPmAdCe-E/hqdefault.jpg)](https://www.youtube.com/watch?v=aHYPmAdCe-E)
+[![Watch the Windows Login Guard demonstration](https://img.youtube.com/vi/Gmk7dJPi7tI/hqdefault.jpg)](https://www.youtube.com/watch?v=Gmk7dJPi7tI)
 
-[Watch directly on YouTube](https://www.youtube.com/watch?v=aHYPmAdCe-E)
+[Watch directly on YouTube](https://www.youtube.com/watch?v=Gmk7dJPi7tI)

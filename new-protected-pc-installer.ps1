@@ -26,7 +26,7 @@ if (-not (Test-Path $DefaultsPath)) {
 if (-not (Test-Path $PayloadDir)) {
     throw (
         "The protected-PC installer payload is unavailable. " +
-        "Rerun install-remote-server.ps1 from v1.10.2."
+        "Rerun install-remote-server.ps1 from the current release."
     )
 }
 

@@ -186,6 +186,16 @@ function Ensure-PyWin32Runtime {
 
 $PythonExe = Resolve-Python -RequestedPath $PythonExe
 $SourceDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$VersionPath = Join-Path $SourceDir "VERSION"
+if (-not (Test-Path -LiteralPath $VersionPath)) {
+    throw "VERSION is missing from the extracted release."
+}
+$ReleaseVersion = (
+    Get-Content -LiteralPath $VersionPath -Raw
+).Trim()
+if ([string]::IsNullOrWhiteSpace($ReleaseVersion)) {
+    throw "VERSION is empty in the extracted release."
+}
 
 if ([string]::IsNullOrWhiteSpace($DnsName) -or $DnsName -match '[<>/:]') {
     throw (
@@ -236,7 +246,7 @@ Write-Host (
     "the remote-management role."
 ) -ForegroundColor Cyan
 
-& (Join-Path $SourceDir "upgrade-to-v1.10.2.ps1") `
+& (Join-Path $SourceDir "upgrade.ps1") `
     -InstallDir $ProtectedPcInstallDir
 $ProgramDataDir = Join-Path $env:ProgramData "WindowsLoginGuardRemoteServer"
 $SecureDir = Join-Path $ProgramDataDir "secure"
@@ -244,7 +254,7 @@ $CertPath = Join-Path $SecureDir "server.crt"
 $KeyPath = Join-Path $SecureDir "server.key"
 $ServiceScript = Join-Path $InstallDir "remote_server.py"
 
-Write-Host "Installing Windows Login Guard Remote Management Server v1.10.2..."
+Write-Host "Installing Windows Login Guard Remote Management Server $ReleaseVersion..."
 Write-Host "Using Python: $PythonExe"
 
 New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
@@ -266,7 +276,10 @@ $files = @(
     "REMOTE_MANAGEMENT.md",
     "VERSION",
     "new-device-enrollment-token.ps1",
-    "upgrade-to-v1.10.2.ps1",
+    "new-workstation-enrollment-token.ps1",
+    "new-remote-admin.ps1",
+    "setup-remote-management.ps1",
+    "upgrade.ps1",
     "new-protected-pc-installer.ps1",
     "new-protected-pc-registration.ps1",
     "manage-remote-admins.ps1",
@@ -302,7 +315,7 @@ New-Item `
 $ProtectedPcPayloadFiles = @(
     "install-protected-pc.ps1",
     "install.ps1",
-    "upgrade-to-v1.10.2.ps1",
+    "upgrade.ps1",
     "common.py",
     "service.py",
     "ui.pyw",

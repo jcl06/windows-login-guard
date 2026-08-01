@@ -17,6 +17,16 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 $SourceDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$VersionPath = Join-Path $SourceDir "VERSION"
+if (-not (Test-Path -LiteralPath $VersionPath)) {
+    throw "VERSION is missing from the extracted release."
+}
+$ReleaseVersion = (
+    Get-Content -LiteralPath $VersionPath -Raw
+).Trim()
+if ([string]::IsNullOrWhiteSpace($ReleaseVersion)) {
+    throw "VERSION is empty in the extracted release."
+}
 
 $RegistrationFile = Join-Path $SourceDir "registration.json"
 $ExplicitRemoteValues = @(
@@ -65,7 +75,7 @@ if ($remoteCount -ne 0 -and $remoteCount -ne 3) {
     )
 }
 
-Write-Host "Installing Windows Login Guard protected PC v1.10.2..."
+Write-Host "Installing Windows Login Guard protected PC $ReleaseVersion..."
 & (Join-Path $SourceDir "install.ps1") `
     -InstallDir $InstallDir `
     -PythonExe $PythonExe `

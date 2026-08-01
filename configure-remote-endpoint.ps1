@@ -22,7 +22,7 @@ if (-not (Test-Path $ServerCertificate)) {
 }
 foreach ($name in @("remote_agent.py", "remote_common.py", "VERSION")) {
     if (-not (Test-Path (Join-Path $InstallDir $name))) {
-        throw "$name is missing from $InstallDir. Install or upgrade Windows Login Guard to v1.10.2 first."
+        throw "$name is missing from $InstallDir. Install or upgrade Windows Login Guard first."
     }
 }
 

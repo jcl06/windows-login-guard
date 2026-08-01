@@ -197,6 +197,16 @@ function Ensure-PyWin32Runtime {
 
 $PythonExe = Resolve-Python -RequestedPath $PythonExe
 $SourceDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$VersionPath = Join-Path $SourceDir "VERSION"
+if (-not (Test-Path -LiteralPath $VersionPath)) {
+    throw "VERSION is missing from the extracted release."
+}
+$ReleaseVersion = (
+    Get-Content -LiteralPath $VersionPath -Raw
+).Trim()
+if ([string]::IsNullOrWhiteSpace($ReleaseVersion)) {
+    throw "VERSION is empty in the extracted release."
+}
 $ProgramDataDir = Join-Path $env:ProgramData "WindowsLoginGuard"
 $SecureDir = Join-Path $ProgramDataDir "secure"
 $RuntimeDir = Join-Path $ProgramDataDir "runtime"
@@ -206,7 +216,7 @@ $ServiceScript = Join-Path $InstallDir "service.py"
 . (Join-Path $SourceDir "scope_helpers.ps1")
 
 Write-Host "Using Python: $PythonExe"
-Write-Host "Installing Windows Login Guard v1.10.2..."
+Write-Host "Installing Windows Login Guard $ReleaseVersion..."
 
 New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 New-Item -ItemType Directory -Path $UsersDir -Force | Out-Null

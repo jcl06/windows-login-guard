@@ -5,7 +5,6 @@ param(
     [string]$PythonExe = ""
 )
 $ErrorActionPreference = "Stop"
-Write-Warning "This is a legacy compatibility installer. Normal deployments use install-remote-server.ps1, which installs and links Remote Administration automatically."
 Set-StrictMode -Version Latest
 
 function Resolve-Python {
@@ -37,6 +36,17 @@ $PythonExe = Resolve-Python -RequestedPath $PythonExe
 $PythonwExe = Join-Path (Split-Path -Parent $PythonExe) "pythonw.exe"
 if (-not (Test-Path $PythonwExe)) { $PythonwExe = $PythonExe }
 $SourceDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$VersionPath = Join-Path $SourceDir "VERSION"
+if (-not (Test-Path -LiteralPath $VersionPath)) {
+    throw "VERSION is missing from the extracted release."
+}
+$ReleaseVersion = (
+    Get-Content -LiteralPath $VersionPath -Raw
+).Trim()
+if ([string]::IsNullOrWhiteSpace($ReleaseVersion)) {
+    throw "VERSION is empty in the extracted release."
+}
+Write-Host "Installing Windows Login Guard Remote Administration $ReleaseVersion..."
 New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 foreach ($name in @(
     "remote_admin.pyw",
