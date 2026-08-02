@@ -56,6 +56,7 @@ New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
 $CoreFiles = @(
     "common.py",
     "service.py",
+    "lock_session.pyw",
     "ui.pyw",
     "admin.pyw",
     "open-admin.ps1",

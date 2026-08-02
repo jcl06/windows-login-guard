@@ -132,6 +132,7 @@ class PendingServiceLock:
     deadline: float
     event: threading.Event = field(default_factory=threading.Event)
     cancelled: bool = False
+    confirmation: str = ""
 
 
 @dataclass
@@ -241,6 +242,7 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
             with self.lock:
                 pending_lock = self.service_locks.get(session_id)
                 if pending_lock is not None:
+                    pending_lock.confirmation = "wts_session_lock"
                     pending_lock.event.set()
                 self.gates.pop(session_id, None)
                 self.client_actions.pop(session_id, None)
@@ -265,6 +267,7 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
             with self.lock:
                 pending_lock = self.service_locks.get(session_id)
                 if pending_lock is not None:
+                    pending_lock.confirmation = "wts_session_logoff"
                     pending_lock.event.set()
                 self.gates.pop(session_id, None)
                 self.session_grants.pop(session_id, None)
@@ -3238,6 +3241,62 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
         self.logger.error("Unsupported failure action %r", action)
         self._logoff_session(session_id, gate.username)
 
+    def _launch_lock_helper_in_session(self, session_id: int) -> int:
+        install_dir = Path(__file__).resolve().parent
+        helper_script = install_dir / "lock_session.pyw"
+        pythonw_exe = Path(sys.executable).resolve().with_name("pythonw.exe")
+        if not helper_script.exists():
+            raise FileNotFoundError(
+                f"Interactive lock helper is missing: {helper_script}"
+            )
+        if not pythonw_exe.exists():
+            raise FileNotFoundError(
+                f"Python windowed runtime is missing: {pythonw_exe}"
+            )
+
+        token_handle = None
+        environment = None
+        process_handle = None
+        thread_handle = None
+        try:
+            token_handle = win32ts.WTSQueryUserToken(session_id)
+            environment = win32profile.CreateEnvironmentBlock(
+                token_handle,
+                False,
+            )
+            startup = win32process.STARTUPINFO()
+            startup.lpDesktop = r"winsta0\default"
+            command_line = subprocess.list2cmdline(
+                [str(pythonw_exe), str(helper_script)]
+            )
+            process_handle, thread_handle, process_id, _thread_id = (
+                win32process.CreateProcessAsUser(
+                    token_handle,
+                    str(pythonw_exe),
+                    command_line,
+                    None,
+                    None,
+                    False,
+                    win32con.CREATE_UNICODE_ENVIRONMENT,
+                    environment,
+                    str(install_dir),
+                    startup,
+                )
+            )
+            self.logger.warning(
+                "Started workstation-lock helper pid=%s in session %s",
+                process_id,
+                session_id,
+            )
+            return int(process_id)
+        finally:
+            for handle in (thread_handle, process_handle, token_handle):
+                if handle is not None:
+                    try:
+                        handle.Close()
+                    except Exception:
+                        pass
+
     def _execute_verification_lock(
         self,
         *,
@@ -3255,7 +3314,9 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
             "reason": gate.reason,
             "trigger": pending.trigger,
             "policy": pending.policy_key,
-            "method": "WTSDisconnectSession",
+            "method": "LockWorkStation",
+            "launcher": "CreateProcessAsUser",
+            "desktop": r"winsta0\default",
             "timeout_seconds": timeout_seconds,
         }
         self._append_admin_audit(
@@ -3274,7 +3335,9 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
         )
 
         try:
-            self._disconnect_session_for_lock(session_id)
+            details["helper_process_id"] = (
+                self._launch_lock_helper_in_session(session_id)
+            )
         except Exception as exc:
             self.logger.exception(
                 "Service lock request failed for session %s request=%s",
@@ -3320,7 +3383,9 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
             if pending.cancelled:
                 return
             if pending.event.is_set():
-                confirmation = "wts_session_event"
+                confirmation = (
+                    pending.confirmation or "wts_session_event"
+                )
                 break
 
             try:
@@ -3335,10 +3400,6 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
 
             if session_id not in states:
                 confirmation = "session_ended"
-                break
-            state = states[session_id]
-            if state == int(getattr(win32ts, "WTSDisconnected", 4)):
-                confirmation = "wts_disconnected"
                 break
 
         if confirmation:
