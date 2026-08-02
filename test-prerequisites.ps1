@@ -212,6 +212,7 @@ function Test-SourceFiles {
         "requirements.txt",
         "common.py",
         "service.py",
+        "lock_session.pyw",
         "ui.pyw",
         "admin.pyw"
     )

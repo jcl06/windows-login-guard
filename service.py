@@ -68,6 +68,9 @@ WTS_SESSION_LOCK = getattr(win32ts, "WTS_SESSION_LOCK", 0x7)
 WTS_SESSION_UNLOCK = getattr(win32ts, "WTS_SESSION_UNLOCK", 0x8)
 WTS_SESSION_DESKTOP_READY = getattr(win32ts, "WTS_SESSION_DESKTOP_READY", 0xF)
 
+DESKTOP_READY_WAIT_TIMEOUT_SECONDS = 5 * 60
+
+
 DURATION_SECONDS = {
     "15_minutes": 15 * 60,
     "30_minutes": 30 * 60,
@@ -97,6 +100,9 @@ class SessionGate:
     deadline: float | None = None
     timeout_seconds: int | None = None
     activation_deadline: float | None = None
+    desktop_ready_deadline: float | None = None
+    remote_approval_requested: bool = False
+    remote_approval_return_to_verify: bool = False
     failed_attempts: int = 0
     recovery_failed_attempts: int = 0
     recovery_locked_until: float = 0.0
@@ -132,6 +138,7 @@ class PendingServiceLock:
     deadline: float
     event: threading.Event = field(default_factory=threading.Event)
     cancelled: bool = False
+    confirmation: str = ""
 
 
 @dataclass
@@ -241,6 +248,7 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
             with self.lock:
                 pending_lock = self.service_locks.get(session_id)
                 if pending_lock is not None:
+                    pending_lock.confirmation = "wts_session_lock"
                     pending_lock.event.set()
                 self.gates.pop(session_id, None)
                 self.client_actions.pop(session_id, None)
@@ -265,6 +273,7 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
             with self.lock:
                 pending_lock = self.service_locks.get(session_id)
                 if pending_lock is not None:
+                    pending_lock.confirmation = "wts_session_logoff"
                     pending_lock.event.set()
                 self.gates.pop(session_id, None)
                 self.session_grants.pop(session_id, None)
@@ -961,7 +970,11 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
                 verification_state = "Recovery"
                 reason = gate.reason
             elif gate.kind == "approval_wait":
-                verification_state = "Waiting approval"
+                verification_state = (
+                    "Waiting approval"
+                    if gate.remote_approval_requested
+                    else "Waiting local approval"
+                )
                 reason = gate.reason
             elif gate.kind == "enroll":
                 verification_state = "Enrollment"
@@ -982,6 +995,11 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
                     "verification_required": gate is not None,
                     "verification_state": verification_state,
                     "verification_reason": reason,
+                    "remote_approval_requested": bool(
+                        gate is not None
+                        and gate.kind == "approval_wait"
+                        and gate.remote_approval_requested
+                    ),
                     "challenge_id": (
                         gate.challenge_id if gate is not None else ""
                     ),
@@ -1947,6 +1965,12 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
             gate = self.gates.get(session_id)
             if (
                 desktop_available
+                and interaction_context == "default"
+                and gate is not None
+            ):
+                gate.desktop_ready_deadline = None
+            if (
+                desktop_available
                 and (
                     interaction_context == "isolated"
                     or (
@@ -1962,6 +1986,7 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
             ):
                 gate.deadline = now + gate.timeout_seconds
                 gate.activation_deadline = None
+                gate.desktop_ready_deadline = None
                 armed_gate = gate
 
         if armed_gate is not None:
@@ -2036,16 +2061,47 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
             safe_message,
         )
 
-        # Give the normal-desktop fallback a small window to report ready
-        # before the service applies the isolated-start failure action.
+        if safe_event == "isolated_desktop_starting":
+            # Start the isolated-desktop startup deadline only when the normal
+            # helper actually begins the transition. Starting it when the gate
+            # is created consumes the deadline while the helper process itself
+            # is still being launched and can lock an out-of-scope account
+            # before its approval prompt is rendered.
+            with self.lock:
+                gate = self.gates.get(session_id)
+                if (
+                    gate is not None
+                    and gate.deadline is None
+                    and gate.timeout_seconds is not None
+                ):
+                    gate.desktop_ready_deadline = None
+                    gate.activation_deadline = (
+                        time.monotonic()
+                        + int(
+                            self.config[
+                                "isolated_desktop_start_timeout_seconds"
+                            ]
+                        )
+                    )
+
+        # Give the normal-desktop fallback enough time to report ready before
+        # the service applies the isolated-start failure action. The complete
+        # gate timeout begins only when _mark_ui_presence receives the fallback
+        # readiness report.
         if (
             safe_event == "isolated_desktop_failed"
             and self.config.get("isolated_desktop_fallback") == "topmost"
         ):
+            fallback_grace = max(
+                8,
+                int(self.config.get("ui_ready_timeout_seconds", 10)) + 2,
+            )
             with self.lock:
                 gate = self.gates.get(session_id)
                 if gate is not None and gate.deadline is None:
-                    gate.activation_deadline = time.monotonic() + 8
+                    gate.activation_deadline = (
+                        time.monotonic() + fallback_grace
+                    )
 
         return {"ok": True}
 
@@ -2144,6 +2200,12 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
                     "remote_approval_available": (
                         self._remote_approval_available()
                     ),
+                    "remote_approval_requested": bool(
+                        gate.remote_approval_requested
+                    ),
+                    "remote_approval_return_to_verify": bool(
+                        gate.remote_approval_return_to_verify
+                    ),
                     "challenge_id": gate.challenge_id,
                     "allowed_durations": self.config[
                         "allowed_approval_durations"
@@ -2178,10 +2240,22 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
 
         with self.lock:
             gate = self.gates.get(session_id)
-            if gate is None or gate.kind != "verify":
+            if gate is None or gate.kind not in {"verify", "approval_wait"}:
                 return {
                     "ok": False,
-                    "error": "no_verification_challenge",
+                    "error": "no_approval_challenge",
+                }
+            if gate.remote_approval_requested:
+                return {
+                    "ok": True,
+                    "remote_approval_requested": True,
+                    "already_requested": True,
+                    "challenge_id": gate.challenge_id,
+                    "remaining_seconds": (
+                        max(0, int(gate.deadline - time.monotonic()))
+                        if gate.deadline is not None
+                        else int(self.config["approval_timeout_seconds"])
+                    ),
                 }
             if gate.recovery_active:
                 return {
@@ -2191,7 +2265,10 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
             if gate.deadline is not None and time.monotonic() >= gate.deadline:
                 return {"ok": False, "error": "expired"}
 
+            return_to_verify = gate.kind == "verify"
             gate.kind = "approval_wait"
+            gate.remote_approval_requested = True
+            gate.remote_approval_return_to_verify = return_to_verify
             gate.challenge_id = secrets.token_urlsafe(18)
             gate.created_at = time.time()
             gate.created_at_utc = datetime.now(timezone.utc).isoformat()
@@ -2203,6 +2280,7 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
             )
             gate.deadline = time.monotonic() + gate.timeout_seconds
             gate.activation_deadline = None
+            gate.desktop_ready_deadline = None
 
         self._append_admin_audit(
             action="remote_approval_requested",
@@ -2215,6 +2293,7 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
                 "challenge_id": gate.challenge_id,
                 "reason": gate.reason,
                 "timeout_seconds": gate.timeout_seconds,
+                "return_to_verify": return_to_verify,
             },
         )
         self.logger.warning(
@@ -2236,20 +2315,34 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
     ) -> dict[str, Any]:
         with self.lock:
             gate = self.gates.get(session_id)
-            if gate is None or gate.kind != "approval_wait":
+            if (
+                gate is None
+                or gate.kind != "approval_wait"
+                or not gate.remote_approval_requested
+            ):
                 return {
                     "ok": False,
                     "error": "no_remote_approval_request",
                 }
             old_challenge_id = gate.challenge_id
-            gate.kind = "verify"
+            return_to_verify = gate.remote_approval_return_to_verify
+            gate.remote_approval_requested = False
+            gate.remote_approval_return_to_verify = False
+            gate.kind = "verify" if return_to_verify else "approval_wait"
             gate.challenge_id = secrets.token_urlsafe(18)
             gate.created_at = time.time()
             gate.created_at_utc = datetime.now(timezone.utc).isoformat()
             gate.failed_attempts = 0
-            gate.timeout_seconds = int(self.config["timeout_seconds"])
+            gate.timeout_seconds = int(
+                self.config[
+                    "timeout_seconds"
+                    if return_to_verify
+                    else "approval_timeout_seconds"
+                ]
+            )
             gate.deadline = time.monotonic() + gate.timeout_seconds
             gate.activation_deadline = None
+            gate.desktop_ready_deadline = None
 
         self._append_admin_audit(
             action="remote_approval_cancelled_by_user",
@@ -2260,11 +2353,13 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
             details={
                 "session_id": session_id,
                 "challenge_id": old_challenge_id,
+                "returned_to_verify": return_to_verify,
             },
         )
         return {
             "ok": True,
             "remote_approval_cancelled": True,
+            "returned_to_verify": return_to_verify,
         }
 
     def _remote_command_gate(
@@ -3238,6 +3333,62 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
         self.logger.error("Unsupported failure action %r", action)
         self._logoff_session(session_id, gate.username)
 
+    def _launch_lock_helper_in_session(self, session_id: int) -> int:
+        install_dir = Path(__file__).resolve().parent
+        helper_script = install_dir / "lock_session.pyw"
+        pythonw_exe = Path(sys.executable).resolve().with_name("pythonw.exe")
+        if not helper_script.exists():
+            raise FileNotFoundError(
+                f"Interactive lock helper is missing: {helper_script}"
+            )
+        if not pythonw_exe.exists():
+            raise FileNotFoundError(
+                f"Python windowed runtime is missing: {pythonw_exe}"
+            )
+
+        token_handle = None
+        environment = None
+        process_handle = None
+        thread_handle = None
+        try:
+            token_handle = win32ts.WTSQueryUserToken(session_id)
+            environment = win32profile.CreateEnvironmentBlock(
+                token_handle,
+                False,
+            )
+            startup = win32process.STARTUPINFO()
+            startup.lpDesktop = r"winsta0\default"
+            command_line = subprocess.list2cmdline(
+                [str(pythonw_exe), str(helper_script)]
+            )
+            process_handle, thread_handle, process_id, _thread_id = (
+                win32process.CreateProcessAsUser(
+                    token_handle,
+                    str(pythonw_exe),
+                    command_line,
+                    None,
+                    None,
+                    False,
+                    win32con.CREATE_UNICODE_ENVIRONMENT,
+                    environment,
+                    str(install_dir),
+                    startup,
+                )
+            )
+            self.logger.warning(
+                "Started workstation-lock helper pid=%s in session %s",
+                process_id,
+                session_id,
+            )
+            return int(process_id)
+        finally:
+            for handle in (thread_handle, process_handle, token_handle):
+                if handle is not None:
+                    try:
+                        handle.Close()
+                    except Exception:
+                        pass
+
     def _execute_verification_lock(
         self,
         *,
@@ -3255,7 +3406,9 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
             "reason": gate.reason,
             "trigger": pending.trigger,
             "policy": pending.policy_key,
-            "method": "WTSDisconnectSession",
+            "method": "LockWorkStation",
+            "launcher": "CreateProcessAsUser",
+            "desktop": r"winsta0\default",
             "timeout_seconds": timeout_seconds,
         }
         self._append_admin_audit(
@@ -3274,7 +3427,9 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
         )
 
         try:
-            self._disconnect_session_for_lock(session_id)
+            details["helper_process_id"] = (
+                self._launch_lock_helper_in_session(session_id)
+            )
         except Exception as exc:
             self.logger.exception(
                 "Service lock request failed for session %s request=%s",
@@ -3320,7 +3475,9 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
             if pending.cancelled:
                 return
             if pending.event.is_set():
-                confirmation = "wts_session_event"
+                confirmation = (
+                    pending.confirmation or "wts_session_event"
+                )
                 break
 
             try:
@@ -3335,10 +3492,6 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
 
             if session_id not in states:
                 confirmation = "session_ended"
-                break
-            state = states[session_id]
-            if state == int(getattr(win32ts, "WTSDisconnected", 4)):
-                confirmation = "wts_disconnected"
                 break
 
         if confirmation:
@@ -3742,15 +3895,12 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
                 self.config.get("interaction_mode") == "isolated_desktop"
             )
             if isolated and timeout_seconds is not None:
+                # The normal helper reports isolated_desktop_starting when it
+                # actually begins creating the isolated desktop. Until then,
+                # _ensure_ui_ready may still be launching the helper, so neither
+                # the challenge timeout nor the startup timeout should run.
                 deadline = None
-                activation_deadline = (
-                    now
-                    + int(
-                        self.config[
-                            "isolated_desktop_start_timeout_seconds"
-                        ]
-                    )
-                )
+                activation_deadline = None
             else:
                 deadline = (
                     None
@@ -3806,6 +3956,36 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
         seen_at, desktop_available = last_seen
         return desktop_available and (time.monotonic() - seen_at) <= 3.0
 
+    def _ui_is_present(self, session_id: int) -> bool:
+        with self.lock:
+            last_seen = self.ui_last_seen.get(session_id)
+        if last_seen is None:
+            return False
+        seen_at, _desktop_available = last_seen
+        return (time.monotonic() - seen_at) <= 3.0
+
+    def _mark_gate_waiting_for_desktop(
+        self,
+        session_id: int,
+        identity: SessionIdentity,
+    ) -> None:
+        deadline = time.monotonic() + DESKTOP_READY_WAIT_TIMEOUT_SECONDS
+        with self.lock:
+            gate = self.gates.get(session_id)
+            if gate is None:
+                return
+            if gate.desktop_ready_deadline is None:
+                gate.desktop_ready_deadline = deadline
+            else:
+                deadline = gate.desktop_ready_deadline
+        self.logger.warning(
+            "Authenticated UI helper is waiting for the Windows user "
+            "desktop in session %s (%s); fail-closed timeout=%ss",
+            session_id,
+            identity.username,
+            max(0, int(deadline - time.monotonic())),
+        )
+
     def _ensure_ui_ready(self, session_id: int, identity: SessionIdentity) -> bool:
         launch_lock = self._get_ui_launch_lock(session_id)
         with launch_lock:
@@ -3844,15 +4024,28 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
                 self.ui_tokens[session_id] = token
                 self.ui_last_seen.pop(session_id, None)
             launched = self._launch_ui_in_session(session_id, identity, token)
-            if launched and event.wait(timeout=timeout) and self._ui_is_ready(session_id):
-                self.logger.info(
-                    "UI ready on visible desktop for session %s (%s)",
-                    session_id,
-                    identity.username,
-                )
-                return True
+            if launched:
+                wait_deadline = time.monotonic() + timeout
+                while (
+                    not self.stop_requested.is_set()
+                    and time.monotonic() < wait_deadline
+                ):
+                    if self._ui_is_ready(session_id):
+                        self.logger.info(
+                            "UI ready on visible desktop for session %s (%s)",
+                            session_id,
+                            identity.username,
+                        )
+                        return True
+                    if self._ui_is_present(session_id):
+                        self._mark_gate_waiting_for_desktop(
+                            session_id, identity
+                        )
+                        return True
+                    event.wait(timeout=0.20)
             self.logger.warning(
-                "UI readiness timeout for session %s (%s), attempt %s/%s",
+                "UI process did not contact the service for session %s "
+                "(%s), attempt %s/%s",
                 session_id,
                 identity.username,
                 attempt + 1,
@@ -4060,6 +4253,23 @@ class LoginGuardService(win32serviceutil.ServiceFramework):
                         session_id,
                         trigger="recovery_timeout",
                     )
+                continue
+
+            if (
+                gate.desktop_ready_deadline is not None
+                and now >= gate.desktop_ready_deadline
+            ):
+                gate.desktop_ready_deadline = None
+                self.logger.error(
+                    "Windows user desktop did not become ready for session "
+                    "%s (%s) before the fail-closed deadline",
+                    session_id,
+                    gate.username,
+                )
+                self._apply_gate_failure(
+                    session_id,
+                    trigger="desktop_ready_timeout",
+                )
                 continue
 
             if (

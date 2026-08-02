@@ -318,6 +318,7 @@ $ProtectedPcPayloadFiles = @(
     "upgrade.ps1",
     "common.py",
     "service.py",
+    "lock_session.pyw",
     "ui.pyw",
     "admin.pyw",
     "enroll.py",

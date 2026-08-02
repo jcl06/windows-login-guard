@@ -1,6 +1,6 @@
-# Windows Login Guard v1.10.3
+# Windows Login Guard v1.10.4
 
-Windows Login Guard v1.10.3 is a cumulative release from v1.7.2.
+Windows Login Guard v1.10.4 is a cumulative release from v1.7.2.
 
 It preserves standalone local TOTP enforcement, recovery, maintenance, local
 Administration, audit, and diagnostics while adding optional centralized
@@ -260,11 +260,31 @@ immediately restores the configured normal interval.
 
 Local OTP enforcement is unaffected by the outage.
 
-## v1.10.3 verification-failure enforcement fix
+## v1.10.4 verification-failure lock correction
 
-v1.10.3 fixes a failure path where the service selected the configured **Lock**
-action but the Windows session did not lock after the isolated verification
-desktop failed to start.
+v1.10.4 corrects the verification-failure lock implementation introduced in
+v1.10.3. `WTSDisconnectSession` disconnects an RDS session; it does not
+guarantee that the visible local workstation desktop is locked. v1.10.3 also
+accepted the disconnected session state as successful lock confirmation.
+
+### Fix
+
+- The service launches `lock_session.pyw` in the exact target user session.
+- The helper runs on `winsta0\default` and calls `LockWorkStation()`.
+- Lock completion requires `WTS_SESSION_LOCK`, session logoff, or session
+  termination.
+- A disconnected session state is no longer accepted as proof of a workstation
+  lock.
+- The configured `lock_failure_action` is applied when the lock is not
+  confirmed before timeout.
+- Audit details identify `LockWorkStation`, the target desktop, helper process,
+  and actual confirmation event.
+
+## v1.10.3 service-owned enforcement foundation
+
+v1.10.3 moved verification-failure enforcement from the failed UI process to
+the Windows service. v1.10.4 corrects the Windows locking method used by that
+service-owned path.
 
 ### Root cause
 
@@ -275,10 +295,10 @@ The lock timeout and configured fallback could also fail to complete.
 
 ### Fix
 
-- The Windows service now owns verification-failure session locking.
-- The service calls `WTSDisconnectSession` for the exact target session.
+- The Windows service owns verification-failure session enforcement.
 - Lock enforcement no longer depends on the failed verification UI.
-- The service waits for `WTS_SESSION_LOCK`, a disconnected session state, or session termination.
+- v1.10.3 attempted enforcement with `WTSDisconnectSession`; v1.10.4
+  replaces that method with an interactive `LockWorkStation()` helper.
 - The configured lock-action timeout is enforced by the service.
 - The configured lock-failure action is applied when locking raises an error or is not confirmed before timeout.
 - Maintenance, break-glass recovery, remote logoff, and session removal cancel outstanding service-owned lock waits cleanly.
@@ -335,9 +355,9 @@ port:
 .\test-prerequisites.ps1 -Role RemoteAdmin
 ```
 
-## Upgrade from v1.7.2 through v1.10.2
+## Upgrade from v1.7.2 through v1.10.3
 
-From elevated PowerShell in the extracted v1.10.3 package:
+From elevated PowerShell in the extracted v1.10.4 package:
 
 ```powershell
 Set-ExecutionPolicy `
@@ -360,7 +380,7 @@ Get-Service WindowsLoginGuard
 Expected version:
 
 ```text
-1.10.3
+1.10.4
 ```
 
 A local-only installation remains local-only. Remote management is not enabled
@@ -432,7 +452,8 @@ on the management server.
 - Existing v1.7.2 local enrollment is preserved during supported upgrade.
 - Remote management remains optional.
 - Protected PCs continue local enforcement when the server is offline.
-- v1.10.3 uses the same remote-management API generation as v1.10.2.
+- v1.10.4 uses the same remote-management API generation as v1.10.2 and
+  v1.10.3.
 - Upgrade all remote roles together when moving from older v1.8 or v1.9 builds.
 
 ## Security notes

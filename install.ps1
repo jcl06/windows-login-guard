@@ -225,6 +225,7 @@ New-Item -ItemType Directory -Path $RuntimeDir -Force | Out-Null
 $CoreFiles = @(
     "common.py",
     "service.py",
+    "lock_session.pyw",
     "ui.pyw",
     "admin.pyw",
     "enroll.py",

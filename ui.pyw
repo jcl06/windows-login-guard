@@ -420,6 +420,14 @@ def desktop_available(expected_name: str) -> bool:
     )
 
 
+def user_shell_available() -> bool:
+    # During post-update sign-in experiences Windows can expose the default
+    # desktop before the ordinary Explorer shell is ready. Starting the
+    # isolated approval desktop at that point hides the Windows-owned setup
+    # experience and leaves the user looking at a blank screen.
+    return bool(USER32.GetShellWindow())
+
+
 class IsolatedDesktopController:
     """Creates a desktop, launches one Login Guard child, and watches it."""
 
@@ -641,6 +649,7 @@ class GuardWindow:
         self.focus_retry_jobs: list[str] = []
         self.user_interacted = False
         self.use_topmost_fallback = False
+        self.isolated_ready_signaled = False
         self.active_dropdown: OverlayDropdown | None = None
         self.break_glass_active = False
         self.recovery_activity_job: str | None = None
@@ -724,14 +733,17 @@ class GuardWindow:
             self.root.deiconify()
             self.root.update_idletasks()
             self.root.update()
-            self._signal_isolated_child_ready()
+            # Do not signal the parent yet. The child must first obtain a
+            # complete status response and render the actual verification or
+            # approval prompt. Signalling here allowed the parent to switch to
+            # an empty isolated desktop while the child was still connecting.
         else:
             self.root.withdraw()
 
         self.root.after(100, self.poll)
 
     def _signal_isolated_child_ready(self) -> None:
-        if not self.ready_event_name:
+        if self.isolated_ready_signaled or not self.ready_event_name:
             return
         handle = None
         try:
@@ -741,8 +753,9 @@ class GuardWindow:
                 self.ready_event_name,
             )
             win32event.SetEvent(handle)
+            self.isolated_ready_signaled = True
         except Exception:
-            # The parent will detect readiness timeout and report diagnostics.
+            # A later poll can retry. The parent still has its startup timeout.
             pass
         finally:
             if handle is not None:
@@ -949,9 +962,10 @@ class GuardWindow:
             approval_mode = str(
                 self.current_response.get("admin_approval_mode", "inline")
             )
-            self._set_window_size(
-                680, 550 if approval_mode in {"inline", "either"} else 390
-            )
+            height = 550 if approval_mode in {"inline", "either"} else 390
+            if self.current_response.get("remote_approval_available", False):
+                height += 105
+            self._set_window_size(680, height)
         elif mode == "approval_console":
             self._set_window_size(680, 550)
         elif mode == "deny":
@@ -1031,7 +1045,12 @@ class GuardWindow:
         expected_desktop = (
             self.desktop_name if self.isolated_child else "default"
         )
-        interactive = desktop_available(expected_desktop)
+        desktop_ready = desktop_available(expected_desktop)
+        interactive = (
+            desktop_ready
+            if self.isolated_child
+            else desktop_ready and user_shell_available()
+        )
         try:
             response = self.service_request(
                 {
@@ -1081,7 +1100,9 @@ class GuardWindow:
                         "is active." + timer_text
                     )
                 )
-            elif interactive and response.get("required", False):
+            elif response.get("required", False) and (
+                interactive or self.isolated_child
+            ):
                 if (
                     not self.isolated_child
                     and not self.use_topmost_fallback
@@ -1093,6 +1114,14 @@ class GuardWindow:
                 else:
                     self.show()
                     self._render_response(response)
+                    if self.isolated_child:
+                        # Build and map the complete prompt before the parent
+                        # switches the input desktop. This prevents the blank
+                        # isolated screen seen by out-of-scope accounts waiting
+                        # for administrator approval.
+                        self.root.update_idletasks()
+                        self.root.update()
+                        self._signal_isolated_child_ready()
             else:
                 if self.isolated_child:
                     self.exit_code = EXIT_VERIFIED
@@ -1113,6 +1142,18 @@ class GuardWindow:
     def _start_isolated_controller(self) -> None:
         if self.isolated_controller is not None:
             return
+        try:
+            self.service_request(
+                {
+                    "action": "ui_event",
+                    "event_name": "isolated_desktop_starting",
+                    "message": "Creating and rendering the isolated UI child.",
+                }
+            )
+        except Exception:
+            # The child will still attempt to start. Service/UI connectivity is
+            # checked again by the child before the desktop is switched.
+            pass
         ui_script = str(Path(__file__).resolve())
         pythonw_exe = str(Path(sys.executable).resolve())
         configured_timeout = int(
@@ -1255,6 +1296,11 @@ class GuardWindow:
             request_ids,
             approver_ids,
             response.get("admin_approval_mode", ""),
+            bool(response.get("remote_approval_available", False)),
+            bool(response.get("remote_approval_requested", False)),
+            bool(
+                response.get("remote_approval_return_to_verify", False)
+            ),
             response.get("provisioning_uri", ""),
         )
         if render_key != self.current_key:
@@ -1884,14 +1930,35 @@ class GuardWindow:
         self._label(
             f"Approve access for {response.get('username', 'this account')}."
         )
-        if response.get("remote_approval_available", False):
+        remote_available = bool(
+            response.get("remote_approval_available", False)
+        )
+        remote_requested = bool(
+            response.get("remote_approval_requested", False)
+        )
+        if remote_available and remote_requested:
             self._label(
-                "This request is being synchronized to the remote "
-                "management server. Keep this PC connected while waiting."
+                "Remote approval has been requested. Keep this PC connected "
+                "while a registered administrator reviews the request."
+            )
+            if response.get("remote_approval_return_to_verify", False):
+                self._button(
+                    "Use my OTP instead",
+                    self.cancel_remote_approval,
+                )
+            else:
+                self._button(
+                    "Cancel remote request",
+                    self.cancel_remote_approval,
+                )
+        elif remote_available:
+            self._label(
+                "A registered remote administrator can also approve this "
+                "session."
             )
             self._button(
-                "Use my OTP instead",
-                self.cancel_remote_approval,
+                "Request Approval",
+                self.request_remote_approval,
             )
 
         approval_mode = str(
@@ -1980,7 +2047,14 @@ class GuardWindow:
         if response.get("remote_approval_cancelled"):
             self.current_key = ()
             self.current_mode = ""
-            self.status.config(text="Remote approval cancelled. Enter your OTP.")
+            if response.get("returned_to_verify", False):
+                message = "Remote approval cancelled. Enter your OTP."
+            else:
+                message = (
+                    "Remote approval request cancelled. Local administrator "
+                    "approval remains available."
+                )
+            self.status.config(text=message)
             return
         self._show_error(response)
 
